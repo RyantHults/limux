@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in cmux
+description: Report a bug in limux
 labels: ["bug"]
 body:
   - type: markdown
@@ -8,30 +8,31 @@ body:
         Thanks for reporting a bug! Please fill out the information below so we can reproduce and fix it.
 
   - type: input
-    id: cmux-version
+    id: limux-version
     attributes:
-      label: cmux version
-      description: "Run `cmux --version` or check About cmux in the menu bar."
-      placeholder: "e.g. 0.3.2"
+      label: limux version
+      description: "Run `limux-cli version` or check About in the app."
+      placeholder: "e.g. 0.1.0"
     validations:
       required: true
 
   - type: input
-    id: macos-version
+    id: distro
     attributes:
-      label: macOS version
-      description: "Apple menu → About This Mac"
-      placeholder: "e.g. macOS 15.3 (Sequoia)"
+      label: Linux distribution
+      description: "Run `cat /etc/os-release | head -5`"
+      placeholder: "e.g. Ubuntu 24.04, Fedora 40, Arch rolling"
     validations:
       required: true
 
   - type: dropdown
-    id: chip
+    id: display-server
     attributes:
-      label: Mac chip
+      label: Display server
       options:
-        - Apple Silicon (M1/M2/M3/M4)
-        - Intel
+        - Wayland
+        - X11
+        - Unsure
     validations:
       required: true
 
@@ -40,23 +41,22 @@ body:
     attributes:
       label: Installation method
       options:
-        - Homebrew
-        - Direct download (DMG)
         - Built from source
+        - AppImage
+        - Flatpak
+        - .deb / apt
+        - Other (describe below)
     validations:
       required: true
 
-  - type: dropdown
-    id: nightly-repro
+  - type: input
+    id: gpu
     attributes:
-      label: Can you reproduce this on cmux NIGHTLY?
-      description: "Please test with the latest NIGHTLY build first: https://github.com/manaflow-ai/cmux?tab=readme-ov-file#nightly-builds"
-      options:
-        - Yes, it still reproduces on NIGHTLY
-        - No, it does not reproduce on NIGHTLY
-        - I could not test NIGHTLY
+      label: GPU and driver
+      description: "Run `glxinfo -B | grep -E 'OpenGL (vendor|renderer|version)'` if available."
+      placeholder: "e.g. Mesa Intel UHD Graphics, OpenGL 4.6"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: description
@@ -81,7 +81,7 @@ body:
       label: Steps to reproduce
       description: "Minimal steps to reproduce the bug."
       placeholder: |
-        1. Open cmux
+        1. Launch limux
         2. ...
         3. See error
     validations:
@@ -92,17 +92,17 @@ body:
     attributes:
       label: Shell and environment
       description: "Which shell are you using? Any relevant env config (oh-my-zsh, starship, tmux, etc.)?"
-      placeholder: "e.g. zsh with starship prompt, using tmux inside cmux"
+      placeholder: "e.g. zsh with starship prompt, using tmux inside limux"
     validations:
       required: false
 
   - type: textarea
     id: logs
     attributes:
-      label: Relevant logs or crash reports
+      label: Relevant logs
       description: |
-        If applicable, paste logs or crash reports. Crash reports are in `~/Library/Logs/DiagnosticReports/`.
-        You can also check `Console.app` for cmux-related messages.
+        If applicable, paste logs from `journalctl --user -e` filtered on limux, or stderr output
+        from running `limux` directly in a terminal.
       render: text
     validations:
       required: false

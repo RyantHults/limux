@@ -166,27 +166,27 @@ pub async fn probe_remote_platform(
     config: &RemoteConfiguration,
     version: &str,
 ) -> Result<ProbeResult, BootstrapError> {
-    // Shell script matches the macOS reference — uses __CMUX_REMOTE_*__ markers for reliable parsing.
+    // Shell script matches the macOS reference — uses __LIMUX_REMOTE_*__ markers for reliable parsing.
     let script = format!(
-        r#"cmux_uname_os="$(uname -s)"
-cmux_uname_arch="$(uname -m)"
-printf '%s%s\n' '__CMUX_REMOTE_OS__=' "$cmux_uname_os"
-printf '%s%s\n' '__CMUX_REMOTE_ARCH__=' "$cmux_uname_arch"
-case "$(printf '%s' "$cmux_uname_os" | tr '[:upper:]' '[:lower:]')" in
-  linux|darwin|freebsd) cmux_go_os="$(printf '%s' "$cmux_uname_os" | tr '[:upper:]' '[:lower:]')" ;;
+        r#"limux_uname_os="$(uname -s)"
+limux_uname_arch="$(uname -m)"
+printf '%s%s\n' '__LIMUX_REMOTE_OS__=' "$limux_uname_os"
+printf '%s%s\n' '__LIMUX_REMOTE_ARCH__=' "$limux_uname_arch"
+case "$(printf '%s' "$limux_uname_os" | tr '[:upper:]' '[:lower:]')" in
+  linux|darwin|freebsd) limux_go_os="$(printf '%s' "$limux_uname_os" | tr '[:upper:]' '[:lower:]')" ;;
   *) exit 70 ;;
 esac
-case "$(printf '%s' "$cmux_uname_arch" | tr '[:upper:]' '[:lower:]')" in
-  x86_64|amd64) cmux_go_arch=amd64 ;;
-  aarch64|arm64) cmux_go_arch=arm64 ;;
-  armv7l) cmux_go_arch=arm ;;
+case "$(printf '%s' "$limux_uname_arch" | tr '[:upper:]' '[:lower:]')" in
+  x86_64|amd64) limux_go_arch=amd64 ;;
+  aarch64|arm64) limux_go_arch=arm64 ;;
+  armv7l) limux_go_arch=arm ;;
   *) exit 71 ;;
 esac
-cmux_remote_path="$HOME/.cmux/bin/cmuxd-remote/{version}/${{cmux_go_os}}-${{cmux_go_arch}}/cmuxd-remote"
-if [ -x "$cmux_remote_path" ]; then
-  printf '%syes\n' '__CMUX_REMOTE_EXISTS__='
+limux_remote_path="$HOME/.limux/bin/limuxd-remote/{version}/${{limux_go_os}}-${{limux_go_arch}}/limuxd-remote"
+if [ -x "$limux_remote_path" ]; then
+  printf '%syes\n' '__LIMUX_REMOTE_EXISTS__='
 else
-  printf '%sno\n' '__CMUX_REMOTE_EXISTS__='
+  printf '%sno\n' '__LIMUX_REMOTE_EXISTS__='
 fi"#,
         version = version
     );
@@ -199,20 +199,20 @@ fi"#,
     let mut exists = false;
 
     for line in output.stdout.lines() {
-        if let Some(val) = line.strip_prefix("__CMUX_REMOTE_OS__=") {
+        if let Some(val) = line.strip_prefix("__LIMUX_REMOTE_OS__=") {
             raw_os = Some(val.to_string());
-        } else if let Some(val) = line.strip_prefix("__CMUX_REMOTE_ARCH__=") {
+        } else if let Some(val) = line.strip_prefix("__LIMUX_REMOTE_ARCH__=") {
             raw_arch = Some(val.to_string());
-        } else if let Some(val) = line.strip_prefix("__CMUX_REMOTE_EXISTS__=") {
+        } else if let Some(val) = line.strip_prefix("__LIMUX_REMOTE_EXISTS__=") {
             exists = val.trim() == "yes";
         }
     }
 
     let raw_os = raw_os.ok_or_else(|| BootstrapError::ProbeFailed {
-        detail: "missing __CMUX_REMOTE_OS__ in probe output".into(),
+        detail: "missing __LIMUX_REMOTE_OS__ in probe output".into(),
     })?;
     let raw_arch = raw_arch.ok_or_else(|| BootstrapError::ProbeFailed {
-        detail: "missing __CMUX_REMOTE_ARCH__ in probe output".into(),
+        detail: "missing __LIMUX_REMOTE_ARCH__ in probe output".into(),
     })?;
 
     let go_os = match raw_os.to_lowercase().as_str() {
@@ -266,13 +266,13 @@ fn cached_binary_path(go_os: &str, go_arch: &str, version: &str) -> PathBuf {
     cache_dir()
         .join(version)
         .join(format!("{}-{}", go_os, go_arch))
-        .join("cmuxd-remote")
+        .join("limuxd-remote")
 }
 
 /// Ensure the daemon binary is available locally.
 ///
 /// Priority chain:
-/// 1. `CMUX_REMOTE_DAEMON_BINARY` env var — explicit path, fail hard if invalid
+/// 1. `LIMUX_REMOTE_DAEMON_BINARY` env var — explicit path, fail hard if invalid
 /// 2. Cached binary at `$XDG_CACHE_HOME/limux/remote-daemons/<version>/<os>-<arch>/`
 /// 3. Manifest download + SHA-256 verification
 pub async fn ensure_local_binary(
@@ -281,12 +281,12 @@ pub async fn ensure_local_binary(
     version: &str,
 ) -> Result<PathBuf, BootstrapError> {
     // 1. Explicit override — highest priority, fail hard if set but invalid.
-    if let Ok(override_path) = std::env::var("CMUX_REMOTE_DAEMON_BINARY") {
+    if let Ok(override_path) = std::env::var("LIMUX_REMOTE_DAEMON_BINARY") {
         if !override_path.is_empty() {
             let p = PathBuf::from(&override_path);
             if !p.exists() {
                 return Err(BootstrapError::DownloadFailed {
-                    detail: format!("CMUX_REMOTE_DAEMON_BINARY path does not exist: {}", override_path),
+                    detail: format!("LIMUX_REMOTE_DAEMON_BINARY path does not exist: {}", override_path),
                 });
             }
             #[cfg(unix)]
@@ -295,7 +295,7 @@ pub async fn ensure_local_binary(
                 let mode = std::fs::metadata(&p)?.permissions().mode();
                 if mode & 0o111 == 0 {
                     return Err(BootstrapError::DownloadFailed {
-                        detail: format!("CMUX_REMOTE_DAEMON_BINARY is not executable: {}", override_path),
+                        detail: format!("LIMUX_REMOTE_DAEMON_BINARY is not executable: {}", override_path),
                     });
                 }
             }
@@ -343,7 +343,7 @@ pub async fn ensure_local_binary(
 /// Load the daemon manifest, either from embedded data or by fetching from the release URL.
 async fn load_manifest(version: &str) -> Result<DaemonManifest, BootstrapError> {
     // Check for embedded manifest (set at build time).
-    let embedded = option_env!("CMUX_REMOTE_MANIFEST_JSON").unwrap_or("");
+    let embedded = option_env!("LIMUX_REMOTE_MANIFEST_JSON").unwrap_or("");
     if !embedded.is_empty() {
         if let Ok(m) = serde_json::from_str::<DaemonManifest>(embedded) {
             if m.app_version == version {
@@ -354,7 +354,7 @@ async fn load_manifest(version: &str) -> Result<DaemonManifest, BootstrapError> 
 
     // Fetch live manifest from release URL.
     let url = format!(
-        "https://github.com/RyantHults/limux/releases/download/cmuxd-remote-v{}/cmuxd-remote-manifest.json",
+        "https://github.com/RyantHults/limux/releases/download/limuxd-remote-v{}/limuxd-remote-manifest.json",
         version
     );
     let tmp = cache_dir().join(format!("manifest-{}.json.tmp", version));
@@ -417,7 +417,7 @@ fn verify_sha256(path: &Path, expected_hex: &str) -> Result<(), BootstrapError> 
 /// Remote daemon binary path template (with `$HOME` for shell expansion in SSH commands).
 pub fn remote_daemon_path(go_os: &str, go_arch: &str, version: &str) -> String {
     format!(
-        "$HOME/.cmux/bin/cmuxd-remote/{}/{}-{}/cmuxd-remote",
+        "$HOME/.limux/bin/limuxd-remote/{}/{}-{}/limuxd-remote",
         version, go_os, go_arch
     )
 }
@@ -425,7 +425,7 @@ pub fn remote_daemon_path(go_os: &str, go_arch: &str, version: &str) -> String {
 /// Remote daemon binary path with `~` prefix (for SCP, which expands `~` but not `$HOME`).
 fn remote_daemon_path_scp(go_os: &str, go_arch: &str, version: &str) -> String {
     format!(
-        ".cmux/bin/cmuxd-remote/{}/{}-{}/cmuxd-remote",
+        ".limux/bin/limuxd-remote/{}/{}-{}/limuxd-remote",
         version, go_os, go_arch
     )
 }
@@ -488,13 +488,13 @@ pub async fn upload_daemon_binary(
 
 // ── Remote metadata installation ───────────────────────────────────
 
-/// Install relay metadata and the cmux CLI wrapper on the remote host.
+/// Install relay metadata and the limux CLI wrapper on the remote host.
 ///
 /// Creates:
-/// - `~/.cmux/relay/<port>.auth` — JSON with relay_id and relay_token
-/// - `~/.cmux/relay/<port>.daemon_path` — path to daemon binary
-/// - `~/.cmux/socket_addr` — relay address (127.0.0.1:<port>)
-/// - `~/.cmux/bin/cmux` — CLI wrapper script
+/// - `~/.limux/relay/<port>.auth` — JSON with relay_id and relay_token
+/// - `~/.limux/relay/<port>.daemon_path` — path to daemon binary
+/// - `~/.limux/socket_addr` — relay address (127.0.0.1:<port>)
+/// - `~/.limux/bin/limux` — CLI wrapper script
 pub async fn install_remote_metadata(
     config: &RemoteConfiguration,
     relay_port: u16,
@@ -504,14 +504,14 @@ pub async fn install_remote_metadata(
 ) -> Result<(), BootstrapError> {
     let wrapper_script = r#"#!/usr/bin/env bash
 set -euo pipefail
-daemon="$HOME/.cmux/bin/cmuxd-remote-current"
-socket_path="${CMUX_SOCKET_PATH:-}"
-if [ -z "$socket_path" ] && [ -r "$HOME/.cmux/socket_addr" ]; then
-  socket_path="$(tr -d '\r\n' < "$HOME/.cmux/socket_addr")"
+daemon="$HOME/.limux/bin/limuxd-remote-current"
+socket_path="${LIMUX_SOCKET_PATH:-}"
+if [ -z "$socket_path" ] && [ -r "$HOME/.limux/socket_addr" ]; then
+  socket_path="$(tr -d '\r\n' < "$HOME/.limux/socket_addr")"
 fi
 if [ -n "$socket_path" ] && [ "${socket_path#/}" = "$socket_path" ] && [ "${socket_path#*:}" != "$socket_path" ]; then
   relay_port="${socket_path##*:}"
-  relay_map="$HOME/.cmux/relay/${relay_port}.daemon_path"
+  relay_map="$HOME/.limux/relay/${relay_port}.daemon_path"
   if [ -r "$relay_map" ]; then
     mapped_daemon="$(tr -d '\r\n' < "$relay_map")"
     if [ -n "$mapped_daemon" ] && [ -x "$mapped_daemon" ]; then
@@ -524,18 +524,18 @@ exec "$daemon" "$@"
 
     let install_script = format!(
         r#"umask 077
-mkdir -p "$HOME/.cmux" "$HOME/.cmux/relay" "$HOME/.cmux/bin"
-chmod 700 "$HOME/.cmux/relay"
-cat > "$HOME/.cmux/bin/cmux" <<'CMUXWRAPPER'
+mkdir -p "$HOME/.limux" "$HOME/.limux/relay" "$HOME/.limux/bin"
+chmod 700 "$HOME/.limux/relay"
+cat > "$HOME/.limux/bin/limux" <<'LIMUXWRAPPER'
 {wrapper}
-CMUXWRAPPER
-chmod 755 "$HOME/.cmux/bin/cmux"
-printf '%s' "{daemon_path}" > "$HOME/.cmux/relay/{port}.daemon_path"
-cat > "$HOME/.cmux/relay/{port}.auth" <<'CMUXRELAYAUTH'
+LIMUXWRAPPER
+chmod 755 "$HOME/.limux/bin/limux"
+printf '%s' "{daemon_path}" > "$HOME/.limux/relay/{port}.daemon_path"
+cat > "$HOME/.limux/relay/{port}.auth" <<'LIMUXRELAYAUTH'
 {{"relay_id":"{relay_id}","relay_token":"{relay_token}"}}
-CMUXRELAYAUTH
-chmod 600 "$HOME/.cmux/relay/{port}.auth"
-printf '%s' '127.0.0.1:{port}' > "$HOME/.cmux/socket_addr"
+LIMUXRELAYAUTH
+chmod 600 "$HOME/.limux/relay/{port}.auth"
+printf '%s' '127.0.0.1:{port}' > "$HOME/.limux/socket_addr"
 "#,
         wrapper = wrapper_script,
         daemon_path = daemon_remote_path,
@@ -596,7 +596,7 @@ pub async fn hello_handshake(
     }
 
     let result = &parsed["result"];
-    let name = result["name"].as_str().unwrap_or("cmuxd-remote").to_string();
+    let name = result["name"].as_str().unwrap_or("limuxd-remote").to_string();
     let version = result["version"].as_str().unwrap_or("dev").to_string();
     let capabilities: Vec<String> = result["capabilities"]
         .as_array()

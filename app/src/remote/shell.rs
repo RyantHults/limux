@@ -1,15 +1,15 @@
 //! Shell bootstrap script generation for remote SSH sessions.
 //!
 //! Generates the SSH terminal startup command that configures the remote shell
-//! environment with PATH, CMUX_SOCKET_PATH, and other variables so that
-//! `cmux` commands work from the remote host.
+//! environment with PATH, LIMUX_SOCKET_PATH, and other variables so that
+//! `limux` commands work from the remote host.
 
 use super::config::RemoteConfiguration;
 
 /// Generate the full SSH command for launching a remote terminal with env vars configured.
 ///
 /// The command SSHes to the destination and runs an inline bootstrap script that:
-/// 1. Exports environment variables (PATH, CMUX_SOCKET_PATH, COLORTERM, TERM_PROGRAM)
+/// 1. Exports environment variables (PATH, LIMUX_SOCKET_PATH, COLORTERM, TERM_PROGRAM)
 /// 2. Execs an interactive login shell
 pub fn generate_startup_command(config: &RemoteConfiguration, relay_port: u16) -> String {
     let bootstrap = generate_bootstrap_script(relay_port);
@@ -30,8 +30,8 @@ pub fn generate_startup_command(config: &RemoteConfiguration, relay_port: u16) -
 /// Generate the inline bootstrap script that runs on the remote host.
 fn generate_bootstrap_script(relay_port: u16) -> String {
     format!(
-        r#"export PATH="$HOME/.cmux/bin:$PATH"
-export CMUX_SOCKET_PATH='127.0.0.1:{relay_port}'
+        r#"export PATH="$HOME/.limux/bin:$PATH"
+export LIMUX_SOCKET_PATH='127.0.0.1:{relay_port}'
 export COLORTERM='truecolor'
 export TERM_PROGRAM='ghostty'
 exec "$SHELL" -il"#,

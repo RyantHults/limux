@@ -11,12 +11,12 @@ import time
 
 import pytest
 
-from cmux import cmux, cmuxError
+from limux import limux, limuxError
 
 
 @pytest.fixture
 def cli():
-    with cmux() as c:
+    with limux() as c:
         yield c
 
 
@@ -106,5 +106,5 @@ def test_list_workspaces_length_prefixed(cli):
 
 
 def test_error_on_unknown_workspace(cli):
-    with pytest.raises(cmuxError):
+    with pytest.raises(limuxError):
         cli.select_workspace(99999)

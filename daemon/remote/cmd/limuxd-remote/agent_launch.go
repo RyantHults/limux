@@ -11,17 +11,17 @@ import (
 	"time"
 )
 
-const claudeNodeOptionsRestoreModuleScript = `const hadOriginalNodeOptions = process.env.CMUX_ORIGINAL_NODE_OPTIONS_PRESENT === "1";
+const claudeNodeOptionsRestoreModuleScript = `const hadOriginalNodeOptions = process.env.LIMUX_ORIGINAL_NODE_OPTIONS_PRESENT === "1";
 if (hadOriginalNodeOptions) {
-  process.env.NODE_OPTIONS = process.env.CMUX_ORIGINAL_NODE_OPTIONS ?? "";
+  process.env.NODE_OPTIONS = process.env.LIMUX_ORIGINAL_NODE_OPTIONS ?? "";
 } else {
   delete process.env.NODE_OPTIONS;
 }
-delete process.env.CMUX_ORIGINAL_NODE_OPTIONS;
-delete process.env.CMUX_ORIGINAL_NODE_OPTIONS_PRESENT;
+delete process.env.LIMUX_ORIGINAL_NODE_OPTIONS;
+delete process.env.LIMUX_ORIGINAL_NODE_OPTIONS_PRESENT;
 `
 
-// runClaudeTeamsRelay implements `cmux claude-teams` on the remote side.
+// runClaudeTeamsRelay implements `limux claude-teams` on the remote side.
 // It creates tmux shim scripts, sets up environment variables, gets the
 // focused context via system.identify, and exec's into `claude`.
 func runClaudeTeamsRelay(socketPath string, args []string, refreshAddr func() string) int {
@@ -29,7 +29,7 @@ func runClaudeTeamsRelay(socketPath string, args []string, refreshAddr func() st
 
 	shimDir, err := createTmuxShimDir("claude-teams-bin", claudeTeamsShimScript)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cmux claude-teams: failed to create shim directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "limux claude-teams: failed to create shim directory: %v\n", err)
 		return 1
 	}
 
@@ -44,9 +44,9 @@ func runClaudeTeamsRelay(socketPath string, args []string, refreshAddr func() st
 		shimDir:        shimDir,
 		socketPath:     socketPath,
 		focused:        focused,
-		tmuxPathPrefix: "cmux-claude-teams",
-		cmuxBinEnvVar:  "CMUX_CLAUDE_TEAMS_CMUX_BIN",
-		termEnvVar:     "CMUX_CLAUDE_TEAMS_TERM",
+		tmuxPathPrefix: "limux-claude-teams",
+		limuxBinEnvVar:  "LIMUX_CLAUDE_TEAMS_LIMUX_BIN",
+		termEnvVar:     "LIMUX_CLAUDE_TEAMS_TERM",
 		extraEnv: map[string]string{
 			"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
 		},
@@ -58,22 +58,22 @@ func runClaudeTeamsRelay(socketPath string, args []string, refreshAddr func() st
 	launchArgs := claudeTeamsLaunchArgs(args)
 
 	if claudePath == "" {
-		fmt.Fprintf(os.Stderr, "cmux claude-teams: claude not found in PATH\n")
+		fmt.Fprintf(os.Stderr, "limux claude-teams: claude not found in PATH\n")
 		return 1
 	}
 	argv := append([]string{claudePath}, launchArgs...)
 	execErr := syscall.Exec(claudePath, argv, os.Environ())
-	fmt.Fprintf(os.Stderr, "cmux claude-teams: exec failed: %v\n", execErr)
+	fmt.Fprintf(os.Stderr, "limux claude-teams: exec failed: %v\n", execErr)
 	return 1
 }
 
-// runOMORelay implements `cmux omo` on the remote side.
+// runOMORelay implements `limux omo` on the remote side.
 func runOMORelay(socketPath string, args []string, refreshAddr func() string) int {
 	rc := &rpcContext{socketPath: socketPath, refreshAddr: refreshAddr}
 
 	shimDir, err := createOMOShimDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cmux omo: failed to create shim directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "limux omo: failed to create shim directory: %v\n", err)
 		return 1
 	}
 
@@ -81,14 +81,14 @@ func runOMORelay(socketPath string, args []string, refreshAddr func() string) in
 	originalPath := os.Getenv("PATH")
 	opencodePath := findExecutableInPath("opencode", originalPath, shimDir)
 	if opencodePath == "" {
-		fmt.Fprintf(os.Stderr, "cmux omo: opencode not found in PATH\n"+
+		fmt.Fprintf(os.Stderr, "limux omo: opencode not found in PATH\n"+
 			"Install it first:\n  npm install -g opencode-ai\n  # or\n  bun install -g opencode-ai\n")
 		return 1
 	}
 
 	// Ensure oh-my-opencode plugin is set up
 	if err := omoEnsurePlugin(originalPath); err != nil {
-		fmt.Fprintf(os.Stderr, "cmux omo: plugin setup: %v\n", err)
+		fmt.Fprintf(os.Stderr, "limux omo: plugin setup: %v\n", err)
 		return 1
 	}
 
@@ -98,9 +98,9 @@ func runOMORelay(socketPath string, args []string, refreshAddr func() string) in
 		shimDir:        shimDir,
 		socketPath:     socketPath,
 		focused:        focused,
-		tmuxPathPrefix: "cmux-omo",
-		cmuxBinEnvVar:  "CMUX_OMO_CMUX_BIN",
-		termEnvVar:     "CMUX_OMO_TERM",
+		tmuxPathPrefix: "limux-omo",
+		limuxBinEnvVar:  "LIMUX_OMO_LIMUX_BIN",
+		termEnvVar:     "LIMUX_OMO_TERM",
 		extraEnv:       map[string]string{},
 	})
 
@@ -128,7 +128,7 @@ func runOMORelay(socketPath string, args []string, refreshAddr func() string) in
 
 	launchPath, launchArgv := resolveNodeScriptExec(opencodePath, launchArgs, originalPath, shimDir)
 	execErr := syscall.Exec(launchPath, launchArgv, os.Environ())
-	fmt.Fprintf(os.Stderr, "cmux omo: exec failed: %v\n", execErr)
+	fmt.Fprintf(os.Stderr, "limux omo: exec failed: %v\n", execErr)
 	return 1
 }
 
@@ -136,7 +136,7 @@ func runOMORelay(socketPath string, args []string, refreshAddr func() string) in
 
 const claudeTeamsShimScript = `#!/usr/bin/env bash
 set -euo pipefail
-exec "${CMUX_CLAUDE_TEAMS_CMUX_BIN:-cmux}" __tmux-compat "$@"
+exec "${LIMUX_CLAUDE_TEAMS_LIMUX_BIN:-limux}" __tmux-compat "$@"
 `
 
 const omoTmuxShimScript = `#!/usr/bin/env bash
@@ -146,11 +146,11 @@ set -euo pipefail
 case "${1:-}" in
   -V|-v) echo "tmux 3.4"; exit 0 ;;
 esac
-exec "${CMUX_OMO_CMUX_BIN:-cmux}" __tmux-compat "$@"
+exec "${LIMUX_OMO_LIMUX_BIN:-limux}" __tmux-compat "$@"
 `
 
 const omoNotifierShimScript = `#!/usr/bin/env bash
-# Intercept terminal-notifier calls and route through cmux notify.
+# Intercept terminal-notifier calls and route through limux notify.
 TITLE="" BODY=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -159,7 +159,7 @@ while [[ $# -gt 0 ]]; do
     *)        shift ;;
   esac
 done
-exec "${CMUX_OMO_CMUX_BIN:-cmux}" notify --title "${TITLE:-OpenCode}" --body "${BODY:-}"
+exec "${LIMUX_OMO_LIMUX_BIN:-limux}" notify --title "${TITLE:-OpenCode}" --body "${BODY:-}"
 `
 
 func createTmuxShimDir(dirName string, tmuxScript string) (string, error) {
@@ -167,7 +167,7 @@ func createTmuxShimDir(dirName string, tmuxScript string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".cmuxterm", dirName)
+	dir := filepath.Join(home, ".limux", dirName)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
@@ -219,7 +219,7 @@ func writeShimIfChanged(path string, content string) error {
 }
 
 func ensureClaudeNodeOptionsRestoreModule() (string, error) {
-	dir := filepath.Join(os.TempDir(), "cmux-claude-node-options")
+	dir := filepath.Join(os.TempDir(), "limux-claude-node-options")
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
@@ -282,11 +282,11 @@ func getFocusedContext(rc *rpcContext) *focusedContext {
 func configureClaudeNodeOptions(restoreModulePath string) {
 	existing, hadExisting := os.LookupEnv("NODE_OPTIONS")
 	if hadExisting {
-		os.Setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "1")
-		os.Setenv("CMUX_ORIGINAL_NODE_OPTIONS", existing)
+		os.Setenv("LIMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "1")
+		os.Setenv("LIMUX_ORIGINAL_NODE_OPTIONS", existing)
 	} else {
-		os.Setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "0")
-		os.Unsetenv("CMUX_ORIGINAL_NODE_OPTIONS")
+		os.Setenv("LIMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "0")
+		os.Unsetenv("LIMUX_ORIGINAL_NODE_OPTIONS")
 	}
 	os.Setenv("NODE_OPTIONS", mergeNodeOptions(existing, restoreModulePath))
 }
@@ -340,7 +340,7 @@ type agentConfig struct {
 	socketPath     string
 	focused        *focusedContext
 	tmuxPathPrefix string
-	cmuxBinEnvVar  string
+	limuxBinEnvVar  string
 	termEnvVar     string
 	extraEnv       map[string]string
 }
@@ -349,9 +349,9 @@ func configureAgentEnvironment(cfg agentConfig) {
 	// Find our own executable path for the shim to call back
 	selfPath, _ := os.Executable()
 	if selfPath == "" {
-		selfPath = "cmux"
+		selfPath = "limux"
 	}
-	os.Setenv(cfg.cmuxBinEnvVar, selfPath)
+	os.Setenv(cfg.limuxBinEnvVar, selfPath)
 
 	// Prepend shim directory to PATH
 	currentPath := os.Getenv("PATH")
@@ -380,8 +380,8 @@ func configureAgentEnvironment(cfg agentConfig) {
 	os.Setenv("TERM", fakeTerm)
 
 	// Socket path
-	os.Setenv("CMUX_SOCKET_PATH", cfg.socketPath)
-	os.Setenv("CMUX_SOCKET", cfg.socketPath)
+	os.Setenv("LIMUX_SOCKET_PATH", cfg.socketPath)
+	os.Setenv("LIMUX_SOCKET", cfg.socketPath)
 
 	// Unset TERM_PROGRAM so apps don't detect the host terminal and
 	// override tmux-compatible behavior (e.g. opencode switches to
@@ -395,9 +395,9 @@ func configureAgentEnvironment(cfg agentConfig) {
 
 	// Set workspace/surface IDs from focused context
 	if cfg.focused != nil {
-		os.Setenv("CMUX_WORKSPACE_ID", cfg.focused.workspaceId)
+		os.Setenv("LIMUX_WORKSPACE_ID", cfg.focused.workspaceId)
 		if cfg.focused.surfaceId != "" {
-			os.Setenv("CMUX_SURFACE_ID", cfg.focused.surfaceId)
+			os.Setenv("LIMUX_SURFACE_ID", cfg.focused.surfaceId)
 		}
 	}
 
@@ -418,7 +418,7 @@ func omoUserConfigDir() string {
 
 func omoShadowConfigDir() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cmuxterm", "omo-config")
+	return filepath.Join(home, ".limux", "omo-config")
 }
 
 // omoEnsurePlugin creates a shadow config directory that layers the

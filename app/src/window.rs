@@ -798,7 +798,7 @@ pub fn new_remote_workspace(mut config: crate::remote::RemoteConfiguration) -> O
 
         let relay_port = config.relay_port.unwrap_or(0);
 
-        // Build the startup command: SSH with env vars for cmux integration.
+        // Build the startup command: SSH with env vars for limux integration.
         let ssh_command = if relay_port > 0 {
             crate::remote::shell::generate_startup_command(&config, relay_port)
         } else {

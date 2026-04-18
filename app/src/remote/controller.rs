@@ -17,7 +17,7 @@ use super::relay::RelayServer;
 use crate::workspace::WorkspaceId;
 
 /// Daemon version — used for binary path and cache.
-const DAEMON_VERSION: &str = match option_env!("CMUX_REMOTE_DAEMON_VERSION") {
+const DAEMON_VERSION: &str = match option_env!("LIMUX_REMOTE_DAEMON_VERSION") {
     Some(v) => v,
     None => "dev",
 };
@@ -240,7 +240,7 @@ async fn run_full_connection(
         return Ok(hello);
     }
 
-    // 6. Install remote metadata (auth files, cmux wrapper).
+    // 6. Install remote metadata (auth files, limux wrapper).
     bootstrap::install_remote_metadata(
         config,
         relay_port,

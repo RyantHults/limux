@@ -9,10 +9,10 @@ Protocol:
             single line   "ERROR message\\n"     or
             length-prefix  "OK+<byte_count>\\n<raw bytes>"   (no trailing newline)
 
-See linux/app/src/socket.rs for the authoritative list of commands.
+See app/src/socket.rs for the authoritative list of commands.
 
 This replaces the earlier JSON-RPC v2 helper (preserved in git history). The
-v2 client assumed the macOS cmux socket; limux does not speak v2.
+v2 client assumed the macOS limux socket; limux does not speak v2.
 """
 
 from __future__ import annotations
@@ -23,21 +23,21 @@ import time
 from typing import List, Optional, Tuple
 
 
-class cmuxError(Exception):
+class limuxError(Exception):
     """Raised when a command returns an ERROR line or the socket misbehaves."""
 
 
 def _default_socket_path() -> str:
-    override = os.environ.get("LIMUX_SOCKET") or os.environ.get("CMUX_SOCKET")
+    override = os.environ.get("LIMUX_SOCKET")
     if override:
         return override
-    raise cmuxError(
+    raise limuxError(
         "LIMUX_SOCKET not set. Launch limux or point the env var at a running "
         "instance's socket before running tests."
     )
 
 
-class cmux:
+class limux:
     def __init__(self, socket_path: Optional[str] = None):
         self.socket_path = socket_path or _default_socket_path()
         self._sock: Optional[socket.socket] = None
@@ -57,7 +57,7 @@ class cmux:
             except OSError as e:
                 last_err = e
                 time.sleep(0.05)
-        raise cmuxError(f"could not connect to {self.socket_path}: {last_err}")
+        raise limuxError(f"could not connect to {self.socket_path}: {last_err}")
 
     def close(self) -> None:
         if self._sock is not None:
@@ -66,7 +66,7 @@ class cmux:
             finally:
                 self._sock = None
 
-    def __enter__(self) -> "cmux":
+    def __enter__(self) -> "limux":
         if self._sock is None:
             self.connect()
         return self
@@ -90,7 +90,7 @@ class cmux:
         while b"\n" not in buf:
             chunk = self._sock.recv(4096)
             if not chunk:
-                raise cmuxError("socket closed while reading header")
+                raise limuxError("socket closed while reading header")
             buf.extend(chunk)
 
         newline = buf.index(b"\n")
@@ -101,23 +101,23 @@ class cmux:
             try:
                 length = int(header[3:])
             except ValueError as e:
-                raise cmuxError(f"malformed length-prefix header: {header!r}") from e
+                raise limuxError(f"malformed length-prefix header: {header!r}") from e
             body = bytearray(remaining)
             while len(body) < length:
                 chunk = self._sock.recv(min(4096, length - len(body)))
                 if not chunk:
-                    raise cmuxError("socket closed while reading body")
+                    raise limuxError("socket closed while reading body")
                 body.extend(chunk)
             return body[:length].decode("utf-8", errors="replace")
 
         if header.startswith("ERROR"):
-            raise cmuxError(header)
+            raise limuxError(header)
         return header
 
     def _expect_ok(self, response: str) -> str:
         """For single-line `OK [payload]` replies, return the payload (or '')."""
         if not response.startswith("OK"):
-            raise cmuxError(f"unexpected response: {response!r}")
+            raise limuxError(f"unexpected response: {response!r}")
         tail = response[2:]
         return tail[1:] if tail.startswith(" ") else tail
 

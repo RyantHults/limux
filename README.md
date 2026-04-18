@@ -58,7 +58,7 @@ This launches limux with an isolated socket under `/tmp`, runs the MVP pytest su
 app/               # Rust + GTK4 GUI binary
 cli/               # Rust CLI binary (limux-cli)
 ghostty/           # submodule — thin fork for Linux embedded-apprt support
-daemon/remote/     # Go cmuxd-remote daemon (runs on remote hosts for SSH sessions)
+daemon/remote/     # Go limuxd-remote daemon (runs on remote hosts for SSH sessions)
 web/               # Next.js portal (marketing site)
 tests_v2/          # Python socket integration tests (MVP set adapted for Linux)
 docs/              # design docs, ghostty fork notes

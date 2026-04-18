@@ -55,7 +55,7 @@ exists locally.
 The app listens on a Unix socket at `/tmp/limux-<pid>.sock` by default (or
 whatever `--socket <path>` specifies). The path is exported to the env as
 `LIMUX_SOCKET` so child shells and the CLI can connect. See
-`app/src/socket.rs` for the command list and `tests_v2/cmux.py` for a
+`app/src/socket.rs` for the command list and `tests_v2/limux.py` for a
 reference client.
 
 Protocol is line-based:
@@ -78,23 +78,23 @@ MVP pytest suite in `tests_v2/test_linux_mvp.py`, tears everything down.
 Uses `xvfb-run` if no display is available.
 
 The MVP set covers workspace CRUD, panes/splits, terminal send/read, and the
-length-prefixed protocol. Broader coverage ported from the cmux v2 JSON-RPC
-suite is follow-up.
+length-prefixed protocol. Broader coverage ported from the predecessor's v2
+JSON-RPC test suite is follow-up.
 
 ## Remote SSH
 
 The app can host "remote workspaces" that run shells on a remote host over
-SSH. The Go daemon in `daemon/remote/cmd/cmuxd-remote/` is shipped to the
+SSH. The Go daemon in `daemon/remote/cmd/limuxd-remote/` is shipped to the
 remote host at bootstrap time; the app fetches a signed manifest +
 per-`(GOOS, GOARCH)` binaries from this repo's GitHub Releases (tag shape
-`cmuxd-remote-vX.Y.Z`). See `app/src/remote/bootstrap.rs:355` for the URL
-template.
+`limuxd-remote-vX.Y.Z`). See `app/src/remote/bootstrap.rs` for the URL
+template (look for the `releases/download/limuxd-remote-v{}` format string).
 
 To cut a daemon release:
 
 ```bash
-git tag cmuxd-remote-v0.1.0
-git push origin cmuxd-remote-v0.1.0
+git tag limuxd-remote-v0.1.0
+git push origin limuxd-remote-v0.1.0
 ```
 
 The `release-daemon.yml` workflow builds + publishes.
@@ -120,7 +120,7 @@ cli/                    # Rust CLI (limux-cli binary, ~600 LoC)
   src/
     commands/           # workspace, browser, terminal, metadata
 ghostty/                # submodule (thin Linux fork)
-daemon/remote/          # Go cmuxd-remote source
+daemon/remote/          # Go limuxd-remote source
 web/                    # Next.js marketing/docs site
 tests_v2/               # Python socket integration tests
 docs/                   # architecture + fork notes

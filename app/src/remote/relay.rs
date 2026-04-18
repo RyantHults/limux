@@ -76,7 +76,7 @@ impl RelayServer {
         // 1. Generate nonce and send challenge.
         let nonce = super::config::generate_relay_id(); // 32 hex chars
         let challenge = format!(
-            "{{\"protocol\":\"cmux-relay-auth\",\"version\":1,\"relay_id\":\"{}\",\"nonce\":\"{}\"}}\n",
+            "{{\"protocol\":\"limux-relay-auth\",\"version\":1,\"relay_id\":\"{}\",\"nonce\":\"{}\"}}\n",
             self.relay_id, nonce
         );
         tokio::time::timeout(auth_timeout, writer_half.write_all(challenge.as_bytes())).await??;
