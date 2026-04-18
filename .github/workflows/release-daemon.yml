@@ -1,0 +1,53 @@
+name: Release cmuxd-remote
+
+# Builds per-(GOOS, GOARCH) cmuxd-remote binaries plus a manifest
+# that the Linux app fetches at runtime to bootstrap remote hosts.
+#
+# Trigger: push a tag shaped like cmuxd-remote-v0.1.0
+#   git tag cmuxd-remote-v0.1.0 && git push origin cmuxd-remote-v0.1.0
+
+on:
+  push:
+    tags:
+      - "cmuxd-remote-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: daemon/remote/go.sum
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#cmuxd-remote-v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build release assets
+        run: |
+          mkdir -p dist
+          scripts/build_remote_daemon_release_assets.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --release-tag "${{ steps.version.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --output-dir dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            dist/cmuxd-remote-*
+            dist/cmuxd-remote-checksums.txt
+            dist/cmuxd-remote-manifest.json
+          generate_release_notes: true

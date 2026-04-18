@@ -1,0 +1,4 @@
+[submodule "ghostty"]
+	path = ghostty
+	url = git@github.com:RyantHults/ghostty.git
+	branch = limux

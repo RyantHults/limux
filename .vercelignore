@@ -1,0 +1,12 @@
+# limux sources (web portal builds from web/ only)
+app/
+cli/
+ghostty/
+daemon/
+target/
+tests/
+tests_v2/
+scripts/
+docs/
+.git/
+node_modules/

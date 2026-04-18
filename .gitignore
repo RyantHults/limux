@@ -1,0 +1,38 @@
+# Rust
+/target/
+Cargo.lock.bak
+
+# Zig (ghostty submodule puts these inside ghostty/, but catch strays too)
+.zig-cache/
+zig-out/
+
+# Node / web
+node_modules/
+.next/
+.vercel/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.hypothesis/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local scratch
+tmp/
+tmp-*/
+
+# Local env
+.env
+.envrc
+
+# Claude Code per-user settings
+.claude/settings.local.json
