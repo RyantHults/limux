@@ -16,11 +16,12 @@ use super::proxy_broker::{self, ProxyLease, ProxyState};
 use super::relay::RelayServer;
 use crate::workspace::WorkspaceId;
 
-/// Daemon version — used for binary path and cache.
-const DAEMON_VERSION: &str = match option_env!("LIMUX_REMOTE_DAEMON_VERSION") {
-    Some(v) => v,
-    None => "dev",
-};
+/// Daemon version — used to build the GitHub release URL, the remote install
+/// path, and the local cache key. Tied to the app's own `Cargo.toml` version
+/// via `CARGO_PKG_VERSION` (cargo injects it at compile time), so bumping the
+/// app version implies also publishing a matching `limuxd-remote-v<version>`
+/// release. See PORT.md for the release cadence implications.
+const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ── Controller registry ────────────────────────────────────────────
 
