@@ -211,12 +211,19 @@ pub struct RemoteDaemonStatus {
 // ── Daemon manifest types ──────────────────────────────────────────
 
 /// Release manifest for daemon binaries (matches the JSON published alongside releases).
+///
+/// The wire format follows Go's convention of all-caps acronyms in JSON keys
+/// (`goOS`, `downloadURL`, `releaseURL`), which is what the build script
+/// `scripts/build_remote_daemon_release_assets.sh` emits. Serde's default
+/// camelCase would produce lower-case `goOs`/`downloadUrl` which don't match,
+/// so the relevant fields have explicit `#[serde(rename = ...)]` overrides.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonManifest {
     pub schema_version: u32,
     pub app_version: String,
     pub release_tag: String,
+    #[serde(rename = "releaseURL")]
     pub release_url: String,
     pub entries: Vec<ManifestEntry>,
 }
@@ -230,12 +237,15 @@ impl DaemonManifest {
     }
 }
 
-/// A single platform entry in the daemon manifest.
+/// A single platform entry in the daemon manifest. See `DaemonManifest` for
+/// the JSON key casing notes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
+    #[serde(rename = "goOS")]
     pub go_os: String,
     pub go_arch: String,
+    #[serde(rename = "downloadURL")]
     pub download_url: String,
     pub sha256: String,
 }
