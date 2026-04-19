@@ -9,7 +9,7 @@ the terminal emulation + OpenGL rendering, WebKitGTK provides browser panels.
 ```bash
 # First-time setup
 cd ghostty
-zig build -Doptimize=ReleaseFast
+zig build -Dapp-runtime=none -Demit-lib-vt=false -Doptimize=ReleaseFast
 cd ..
 
 # Normal dev loop

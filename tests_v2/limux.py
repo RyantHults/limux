@@ -232,4 +232,7 @@ class limux:
         self._expect_ok(self._send_line(f"send {surface_id} {text}"))
 
     def read_screen(self, surface_id: int) -> str:
-        return self._expect_ok(self._send_line(f"read_screen {surface_id}"))
+        # read_screen returns length-prefixed: "OK+<len>\n<raw bytes>".
+        # _recv_response strips the header and returns just the body;
+        # errors already raise limuxError inside _recv_response.
+        return self._send_line(f"read_screen {surface_id}")

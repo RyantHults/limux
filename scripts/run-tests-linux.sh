@@ -18,6 +18,12 @@ if [[ -z "$LIMUX_BIN" ]]; then
   LIMUX_BIN="target/debug/limux"
 fi
 
+# The dynamic linker looks up libghostty.so at runtime (its SONAME). build.rs
+# embeds an rpath so this usually just works, but set LD_LIBRARY_PATH as a
+# fallback for any code path (moved binary, different cwd) where rpath might
+# not be honored.
+export LD_LIBRARY_PATH="$REPO_ROOT/ghostty/zig-out/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 if [[ ! -x "$LIMUX_BIN" ]]; then
   echo "error: limux binary not found or not executable at $LIMUX_BIN" >&2
   exit 1

@@ -34,7 +34,7 @@ cd limux
 
 # Build libghostty (ReleaseFast takes ~2 minutes on a modern laptop)
 cd ghostty
-zig build -Doptimize=ReleaseFast
+zig build -Dapp-runtime=none -Demit-lib-vt=false -Doptimize=ReleaseFast
 cd ..
 
 # Build the app + CLI

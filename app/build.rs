@@ -5,8 +5,26 @@ fn main() {
         .unwrap_or_else(|_| format!("{manifest_dir}/../ghostty/zig-out/lib"));
 
     println!("cargo:rustc-link-search=native={ghostty_lib}");
-    println!("cargo:rustc-link-lib=ghostty");
+    // ghostty's zig build emits `ghostty-internal.so`/`.a` (no `lib` prefix),
+    // AND embeds a SONAME of `libghostty.so` in the shared library (from
+    // zig's internal library name, which `install()` doesn't rewrite when it
+    // renames the output file). We need symlinks in the lib dir:
+    //  - `libghostty-internal.so`/`.a` → so `-lghostty-internal` resolves at
+    //    link time via the standard ELF `-lFOO` → `libFOO.{so,a}` search.
+    //  - `libghostty.so` → so the dynamic linker finds the SONAME-declared
+    //    dependency at runtime (ld.so searches for the SONAME, not for the
+    //    filename we linked against).
+    // All idempotent: if the link or a real file is already there, we skip.
+    ensure_symlink(&ghostty_lib, "ghostty-internal.so", "libghostty-internal.so");
+    ensure_symlink(&ghostty_lib, "ghostty-internal.a", "libghostty-internal.a");
+    ensure_symlink(&ghostty_lib, "ghostty-internal.so", "libghostty.so");
+    println!("cargo:rustc-link-lib=ghostty-internal");
+    // Embed rpath so the binary finds libghostty.so at runtime without needing
+    // LD_LIBRARY_PATH set. Absolute path (dev build, not release-distributable).
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{ghostty_lib}");
     println!("cargo:rerun-if-env-changed=GHOSTTY_LIB");
+    println!("cargo:rerun-if-changed={ghostty_lib}/ghostty-internal.so");
+    println!("cargo:rerun-if-changed={ghostty_lib}/ghostty-internal.a");
 
     // Compile GLAD (OpenGL loader) — libghostty expects these symbols
     // but only includes them in executable builds, not library builds.
@@ -22,6 +40,23 @@ fn main() {
     }
     for lib in webkit_lib.libs {
         println!("cargo:rustc-link-lib={lib}");
+    }
+}
+
+/// Create a relative symlink `dir/link_name` -> `target_filename`, if it
+/// doesn't already exist. Silently no-ops if the target is missing; cargo
+/// will produce the real link error later with a clearer message.
+fn ensure_symlink(dir: &str, target_filename: &str, link_name: &str) {
+    let target = std::path::Path::new(dir).join(target_filename);
+    if !target.exists() {
+        return;
+    }
+    let link = std::path::Path::new(dir).join(link_name);
+    if link.exists() || link.symlink_metadata().is_ok() {
+        return;
+    }
+    if let Err(e) = std::os::unix::fs::symlink(target_filename, &link) {
+        eprintln!("cargo:warning=failed to symlink {}: {}", link.display(), e);
     }
 }
 
