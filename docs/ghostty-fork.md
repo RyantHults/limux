@@ -71,3 +71,18 @@ conflicts on future upstream rebases are:
 
 If upstream lands native Linux support for the embedded apprt, these patches
 can likely be dropped wholesale. Until then, keep them minimal.
+
+### Always-reapply cursor style on config reload
+
+**Files touched:**
+
+- `src/termio/stream_handler.zig`
+
+Removed the `if (self.default_cursor)` guard around `setCursorStyle(.default)`
+in `StreamHandler.changeConfig`. Upstream keeps shell-issued DECSCUSR cursor
+changes "sticky" across config reloads — once a shell sends `\e[N q`, the
+config's `cursor-style` no longer applies. limux exposes a settings UI where
+the user explicitly picks a cursor style, and that pick must override
+whatever the shell last sent. After this patch, the shell can still set the
+cursor via DECSCUSR after a config reload; we just don't honor the previous
+DECSCUSR across the reload itself.
