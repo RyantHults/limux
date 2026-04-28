@@ -228,11 +228,34 @@ fn attach_ime(
     surface: ghostty_surface_t,
     im_context: &gtk4::IMMulticontext,
 ) {
+    // Ghostty's core does NOT auto-clear preedit on text commit — apprts must
+    // track preedit lifetime themselves. Some IMs (notably ibus 1.5.29) commit
+    // text without emitting preedit-end or an empty preedit-changed, leaving
+    // a stuck preedit cell that renders as a ghost block at the just-typed
+    // character. So we explicitly clear preedit on commit and on preedit-end.
+
     let surf = surface;
     im_context.connect_commit(move |_ctx, text| {
+        // Send IM commits as a synthetic key event with text set, NOT via
+        // ghostty_surface_text. ghostty_surface_text routes through
+        // textCallback → completeClipboardPaste, which in bracketed-paste mode
+        // (default for most shells) wraps each commit in CSI 200~/201~. Shells
+        // with syntax highlighting (zsh-syntax-highlighting, fish) then render
+        // pasted content with an inverted/highlighted block — that's the
+        // "ghost cursor" the user sees on every typed character.
         if let Ok(cstr) = CString::new(text) {
+            let key_event = ghostty_input_key_s {
+                action: GHOSTTY_ACTION_PRESS,
+                keycode: 0,
+                mods: GHOSTTY_MODS_NONE,
+                consumed_mods: GHOSTTY_MODS_NONE,
+                text: cstr.as_ptr(),
+                unshifted_codepoint: 0,
+                composing: false,
+            };
             unsafe {
-                ghostty_surface_text(surf, cstr.as_ptr(), text.len());
+                ghostty_surface_key(surf, key_event);
+                ghostty_surface_preedit(surf, std::ptr::null(), 0);
             }
         }
     });
@@ -244,6 +267,13 @@ fn attach_ime(
             unsafe {
                 ghostty_surface_preedit(surf, cstr.as_ptr(), preedit.len());
             }
+        }
+    });
+
+    let surf = surface;
+    im_context.connect_preedit_end(move |_ctx| {
+        unsafe {
+            ghostty_surface_preedit(surf, std::ptr::null(), 0);
         }
     });
 }

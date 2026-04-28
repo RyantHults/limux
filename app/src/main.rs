@@ -180,14 +180,6 @@ fn main() {
         tray::start();
         dbus::start();
 
-        // Global render timer — queues renders for ALL surfaces every ~16ms.
-        // This is more reliable than per-widget tick callbacks which get
-        // removed during GTK unrealize/re-realize cycles (reparenting).
-        glib::timeout_add_local(std::time::Duration::from_millis(16), || {
-            surface::queue_render();
-            glib::ControlFlow::Continue
-        });
-
         // Autosave session every 30 seconds
         session::start_autosave();
     });
