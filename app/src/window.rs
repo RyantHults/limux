@@ -3778,3 +3778,60 @@ fn build_layout_widget(
         }
     }
 }
+
+// ── Port polling ────────────────────────────────────────────────────
+
+static SCAN_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Start a 5-second timer that scans /proc for listening ports and updates
+/// each workspace's sidebar entry. Skips a tick if the previous scan is still running.
+pub fn start_port_polling() {
+    glib::timeout_add_local(std::time::Duration::from_secs(5), || {
+        if SCAN_IN_PROGRESS.load(std::sync::atomic::Ordering::Relaxed) {
+            return glib::ControlFlow::Continue;
+        }
+
+        // Snapshot workspace dirs on the main thread.
+        let snapshot: Vec<(WorkspaceId, Option<String>)> = with_app_window(|aw| {
+            aw.workspaces
+                .iter()
+                .filter(|ws| ws.remote_config.is_none())
+                .map(|ws| (ws.id, ws.working_directory.clone()))
+                .collect::<Vec<_>>()
+        });
+
+        if snapshot.is_empty() {
+            return glib::ControlFlow::Continue;
+        }
+
+        SCAN_IN_PROGRESS.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        std::thread::spawn(move || {
+            let results = crate::port_detect::scan(&snapshot);
+            glib::idle_add_once(move || {
+                update_workspace_ports(results);
+            });
+        });
+
+        glib::ControlFlow::Continue
+    });
+}
+
+fn update_workspace_ports(results: Vec<(WorkspaceId, Vec<u16>)>) {
+    SCAN_IN_PROGRESS.store(false, std::sync::atomic::Ordering::Relaxed);
+    let result_map: std::collections::HashMap<WorkspaceId, Vec<u16>> =
+        results.into_iter().collect();
+
+    with_app_window_mut(|aw| {
+        for ws in aw.workspaces.iter_mut() {
+            let new_ports = result_map.get(&ws.id).cloned().unwrap_or_default();
+            if ws.listening_ports != new_ports {
+                ws.listening_ports = new_ports.clone();
+                if let Some(widgets) = aw.workspace_widgets.get(&ws.id) {
+                    sidebar::update_row_ports(&widgets.sidebar_row, &new_ports);
+                }
+            }
+        }
+    });
+}

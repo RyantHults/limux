@@ -435,6 +435,8 @@ pub struct Workspace {
     pub custom_title: Option<String>,
     pub working_directory: Option<String>,
     pub git_branch: Option<String>,
+    /// TCP ports currently listened on by processes in this workspace (transient, not persisted).
+    pub listening_ports: Vec<u16>,
     /// Accent color shown as a left-border indicator in the sidebar.
     pub color: Option<WorkspaceColor>,
     /// Pinned workspaces sort to the top of the sidebar and resist accidental close.
@@ -469,6 +471,7 @@ impl Workspace {
             custom_title: None,
             working_directory: None,
             git_branch: None,
+            listening_ports: Vec::new(),
             color: None,
             pinned: false,
             has_bell: false,

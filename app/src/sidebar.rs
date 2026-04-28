@@ -555,6 +555,38 @@ pub fn update_row_log(row: &gtk4::ListBoxRow, entry: Option<&crate::workspace::S
     update_detail_visibility(detail_box);
 }
 
+/// Update the listening-ports entry in the detail box.
+pub fn update_row_ports(row: &gtk4::ListBoxRow, ports: &[u16]) {
+    let Some(detail) = find_child_by_name(row, "workspace-detail") else { return };
+    let detail_box = detail.downcast_ref::<gtk4::Box>().unwrap();
+
+    remove_children_by_class(detail_box, "ports-entry");
+
+    if !ports.is_empty() {
+        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        hbox.add_css_class("ports-entry");
+
+        let icon = gtk4::Image::from_icon_name("network-wired-symbolic");
+        icon.set_pixel_size(12);
+        hbox.append(&icon);
+
+        let text = ports
+            .iter()
+            .map(|p| format!(":{p}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let label = gtk4::Label::new(Some(&text));
+        label.set_xalign(0.0);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.add_css_class("dim-label");
+        hbox.append(&label);
+
+        detail_box.prepend(&hbox);
+    }
+
+    update_detail_visibility(detail_box);
+}
+
 /// Update the progress bar in the detail box.
 pub fn update_row_progress(
     row: &gtk4::ListBoxRow,

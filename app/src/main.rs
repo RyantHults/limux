@@ -6,6 +6,7 @@ mod dbus;
 mod ghostty_sys;
 mod input;
 mod notify;
+mod port_detect;
 mod remote;
 mod session;
 mod settings;
@@ -182,6 +183,9 @@ fn main() {
 
         // Autosave session every 30 seconds
         session::start_autosave();
+
+        // Poll for listening ports every 5 seconds
+        window::start_port_polling();
     });
 
     app.connect_shutdown(|_app| {
