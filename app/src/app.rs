@@ -82,6 +82,27 @@ impl GhosttyApp {
         APP.get().expect("GhosttyApp not initialized").ghostty_app
     }
 
+    /// Get the raw ghostty_config_t handle.
+    /// Valid for the app lifetime; callers must not free or modify it.
+    pub fn config() -> ghostty_config_t {
+        APP.get().expect("GhosttyApp not initialized").config
+    }
+
+    /// Reload config from disk and apply to the running app.
+    /// Call this after writing changes to the Ghostty config file.
+    pub fn reload_config() {
+        unsafe {
+            let new_config = ghostty_config_new();
+            if new_config.is_null() {
+                return;
+            }
+            ghostty_config_load_default_files(new_config);
+            ghostty_config_finalize(new_config);
+            ghostty_app_update_config(Self::handle(), new_config);
+            ghostty_config_free(new_config);
+        }
+    }
+
     /// Clean up. Called on app shutdown.
     pub fn destroy() {
         if let Some(inner) = APP.get() {

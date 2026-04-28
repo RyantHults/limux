@@ -13,6 +13,18 @@ pub type ghostty_app_t = *mut c_void;
 pub type ghostty_config_t = *mut c_void;
 pub type ghostty_surface_t = *mut c_void;
 
+// ── Config types ────────────────────────────────────────────────────
+
+/// Mirrors ghostty_config_color_s from ghostty.h.
+/// Output buffer for color fields read via ghostty_config_get.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct ghostty_config_color_s {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
 // ── Platform ────────────────────────────────────────────────────────
 
 pub const GHOSTTY_PLATFORM_INVALID: c_int = 0;
@@ -308,6 +320,12 @@ unsafe extern "C" {
     pub fn ghostty_config_free(config: ghostty_config_t);
     pub fn ghostty_config_load_default_files(config: ghostty_config_t);
     pub fn ghostty_config_finalize(config: ghostty_config_t);
+    pub fn ghostty_config_get(
+        config: ghostty_config_t,
+        ptr: *mut c_void,
+        key: *const c_char,
+        len: usize,
+    ) -> bool;
 
     // Surface config
     pub fn ghostty_surface_config_new() -> ghostty_surface_config_s;
@@ -319,6 +337,7 @@ unsafe extern "C" {
     ) -> ghostty_app_t;
     pub fn ghostty_app_free(app: ghostty_app_t);
     pub fn ghostty_app_tick(app: ghostty_app_t);
+    pub fn ghostty_app_update_config(app: ghostty_app_t, config: ghostty_config_t);
 
     // Surface
     pub fn ghostty_surface_new(

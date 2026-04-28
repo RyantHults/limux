@@ -1,15 +1,19 @@
 //! Settings UI — a standalone GTK4 window with tabbed pages.
 //!
-//! Pages: General, Keyboard Shortcuts, Appearance (stub), About.
+//! Pages: General, Keyboard Shortcuts, Appearance, About.
 //! Opened via Ctrl+, or the gear button in the sidebar.
 
 use std::cell::RefCell;
+use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 use std::rc::Rc;
 
 use gdk4;
 use gtk4::prelude::*;
 use gtk4::{self, glib};
 
+use crate::app::GhosttyApp;
+use crate::ghostty_sys::{ghostty_config_color_s, ghostty_config_get};
 use crate::settings::{self, Settings, ShortcutDef, SHORTCUT_DEFAULTS};
 
 /// Show the settings window (creates a new one or presents existing).
@@ -324,7 +328,7 @@ fn check_shortcut_conflict(action: &str, accel: &str) -> Option<String> {
     None
 }
 
-// ── Appearance page (STUB) ─────────────────────────────────────────
+// ── Appearance page ────────────────────────────────────────────────
 
 fn build_appearance_page(settings: &Settings) -> gtk4::Box {
     let page = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
@@ -356,46 +360,158 @@ fn build_appearance_page(settings: &Settings) -> gtk4::Box {
     });
     page.append(&form_row("Sidebar visible on startup", &visible_switch));
 
-    // Ghostty config section (STUB — edit button only)
-    page.append(&section_label("Terminal Appearance"));
+    page.append(&build_terminal_appearance_section());
 
-    let info_label = gtk4::Label::new(Some(
-        "Terminal font, colors, cursor, and scrollback are configured in\n\
-         Ghostty's config file. Changes take effect on restart."
+    page
+}
+
+fn build_terminal_appearance_section() -> gtk4::Box {
+    let section = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+
+    section.append(&section_label("Terminal Appearance"));
+
+    let info = gtk4::Label::new(Some(
+        "Settings are written to Ghostty's config file and applied immediately.",
     ));
-    info_label.set_xalign(0.0);
-    info_label.set_wrap(true);
-    info_label.add_css_class("dim-label");
-    page.append(&info_label);
+    info.set_xalign(0.0);
+    info.set_wrap(true);
+    info.add_css_class("dim-label");
+    section.append(&info);
 
-    let config_path = settings::ghostty_config_path();
-    let path_label = gtk4::Label::new(Some(&config_path.display().to_string()));
-    path_label.set_xalign(0.0);
-    path_label.set_selectable(true);
-    path_label.add_css_class("monospace");
-    page.append(&path_label);
+    // ── Font ──────────────────────────────────────────────────────────
+    section.append(&subsection_label("Font"));
 
+    // font-family: RepeatableString — read from file, written to file
+    let family_entry = gtk4::Entry::new();
+    family_entry.set_hexpand(true);
+    family_entry.set_placeholder_text(Some("system default"));
+    if let Some(v) = parse_ghostty_config_key("font-family") {
+        family_entry.set_text(&v);
+    }
+    let e = family_entry.clone();
+    family_entry.connect_activate(move |_| {
+        apply_config_change("font-family", &e.text());
+    });
+    let e = family_entry.clone();
+    let fc = gtk4::EventControllerFocus::new();
+    fc.connect_leave(move |_| apply_config_change("font-family", &e.text()));
+    family_entry.add_controller(fc);
+    section.append(&form_row("Family", &family_entry));
+
+    // font-size: f32 — read via FFI, written as integer string
+    let font_size = config_get_f32("font-size").unwrap_or(12.0);
+    let size_spin = gtk4::SpinButton::with_range(6.0, 72.0, 1.0);
+    size_spin.set_value(font_size as f64);
+    size_spin.connect_value_changed(|spin| {
+        apply_config_change("font-size", &format!("{}", spin.value() as u32));
+    });
+    section.append(&form_row("Size", &size_spin));
+
+    // ── Colors ────────────────────────────────────────────────────────
+    section.append(&subsection_label("Colors"));
+
+    // background/foreground: optional Color — read via FFI (None if not set in config)
+    let bg_entry = gtk4::Entry::new();
+    bg_entry.set_hexpand(true);
+    bg_entry.set_placeholder_text(Some("terminal default"));
+    if let Some(c) = config_get_color("background") {
+        bg_entry.set_text(&color_to_hex(c));
+    }
+    let e = bg_entry.clone();
+    bg_entry.connect_activate(move |_| apply_config_change("background", &e.text()));
+    let e = bg_entry.clone();
+    let fc = gtk4::EventControllerFocus::new();
+    fc.connect_leave(move |_| apply_config_change("background", &e.text()));
+    bg_entry.add_controller(fc);
+    section.append(&form_row("Background", &bg_entry));
+
+    let fg_entry = gtk4::Entry::new();
+    fg_entry.set_hexpand(true);
+    fg_entry.set_placeholder_text(Some("terminal default"));
+    if let Some(c) = config_get_color("foreground") {
+        fg_entry.set_text(&color_to_hex(c));
+    }
+    let e = fg_entry.clone();
+    fg_entry.connect_activate(move |_| apply_config_change("foreground", &e.text()));
+    let e = fg_entry.clone();
+    let fc = gtk4::EventControllerFocus::new();
+    fc.connect_leave(move |_| apply_config_change("foreground", &e.text()));
+    fg_entry.add_controller(fc);
+    section.append(&form_row("Foreground", &fg_entry));
+
+    // ── Cursor ────────────────────────────────────────────────────────
+    section.append(&subsection_label("Cursor"));
+
+    // cursor-style: enum — read via FFI, written as tag name string
+    const CURSOR_STYLES: &[&str] = &["block", "bar", "underline", "block_hollow"];
+    let cursor_combo = gtk4::ComboBoxText::new();
+    for s in CURSOR_STYLES {
+        cursor_combo.append_text(s);
+    }
+    let current_cursor = config_get_ptr_str("cursor-style")
+        .unwrap_or_else(|| "block".to_string());
+    let cursor_idx = CURSOR_STYLES
+        .iter()
+        .position(|&s| s == current_cursor)
+        .unwrap_or(0) as u32;
+    cursor_combo.set_active(Some(cursor_idx));
+    cursor_combo.connect_changed(|combo| {
+        if let Some(v) = combo.active_text() {
+            apply_config_change("cursor-style", v.as_str());
+        }
+    });
+    section.append(&form_row("Style", &cursor_combo));
+
+    // ── Scrollback ────────────────────────────────────────────────────
+    section.append(&subsection_label("Scrollback"));
+
+    // scrollback-limit: usize — read from file, written as integer string
+    let scrollback_entry = gtk4::Entry::new();
+    scrollback_entry.set_hexpand(true);
+    scrollback_entry.set_placeholder_text(Some("10000000"));
+    if let Some(v) = parse_ghostty_config_key("scrollback-limit") {
+        scrollback_entry.set_text(&v);
+    }
+    let e = scrollback_entry.clone();
+    scrollback_entry.connect_activate(move |_| {
+        let s = e.text();
+        // Only write if it parses as a valid integer
+        if s.trim().parse::<u64>().is_ok() {
+            apply_config_change("scrollback-limit", s.trim());
+        }
+    });
+    let e = scrollback_entry.clone();
+    let fc = gtk4::EventControllerFocus::new();
+    fc.connect_leave(move |_| {
+        let s = e.text();
+        if s.trim().parse::<u64>().is_ok() {
+            apply_config_change("scrollback-limit", s.trim());
+        }
+    });
+    scrollback_entry.add_controller(fc);
+    section.append(&form_row("Limit (bytes)", &scrollback_entry));
+
+    // ── Edit button ───────────────────────────────────────────────────
     let edit_btn = gtk4::Button::with_label("Edit Ghostty Config");
     edit_btn.set_halign(gtk4::Align::Start);
     edit_btn.set_margin_top(8);
     edit_btn.connect_clicked(move |_| {
         let path = settings::ghostty_config_path();
-        // Ensure the config file exists
         if !path.exists() {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&path, "# Ghostty configuration\n# See: https://ghostty.org/docs/config\n\n");
+            let _ = std::fs::write(
+                &path,
+                "# Ghostty configuration\n# See: https://ghostty.org/docs/config\n\n",
+            );
         }
-        // Open in the user's editor
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "xdg-open".to_string());
-        let _ = std::process::Command::new(&editor)
-            .arg(&path)
-            .spawn();
+        let _ = std::process::Command::new(&editor).arg(&path).spawn();
     });
-    page.append(&edit_btn);
+    section.append(&edit_btn);
 
-    page
+    section
 }
 
 // ── About page ─────────────────────────────────────────────────────
@@ -420,6 +536,152 @@ fn build_about_page() -> gtk4::Box {
     page.append(&desc);
 
     page
+}
+
+// ── Appearance helpers ─────────────────────────────────────────────
+
+/// Write key=value to the Ghostty config file then reload the live config.
+fn apply_config_change(key: &str, value: &str) {
+    set_ghostty_config_key(key, value.trim());
+    GhosttyApp::reload_config();
+}
+
+/// Update (or append) a single key in the Ghostty config file.
+/// An empty value writes `key =` which resets the field to its default.
+fn set_ghostty_config_key(key: &str, value: &str) {
+    let path = settings::ghostty_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let new_line = if value.is_empty() {
+        format!("{} =", key)
+    } else {
+        format!("{} = {}", key, value)
+    };
+
+    let mut lines: Vec<String> = content.lines().map(String::from).collect();
+    let mut found = false;
+    for line in &mut lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+        // Strip the key prefix; verify the next non-whitespace char is '='
+        // so "font-size" doesn't accidentally match "font-size-adjust".
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            if rest.trim_start().starts_with('=') || rest.trim_start().is_empty() {
+                *line = new_line.clone();
+                found = true;
+                break;
+            }
+        }
+    }
+    if !found {
+        lines.push(new_line);
+    }
+
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    let _ = std::fs::write(&path, out);
+}
+
+fn subsection_label(text: &str) -> gtk4::Label {
+    let label = gtk4::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_margin_top(6);
+    label.set_margin_start(4);
+    label.add_css_class("dim-label");
+    label
+}
+
+fn config_get_f32(key: &str) -> Option<f32> {
+    let config = GhosttyApp::config();
+    if config.is_null() {
+        return None;
+    }
+    let key_c = CString::new(key).ok()?;
+    let mut out: f32 = 0.0;
+    let ok = unsafe {
+        ghostty_config_get(
+            config,
+            &mut out as *mut f32 as *mut std::os::raw::c_void,
+            key_c.as_ptr(),
+            key.len(),
+        )
+    };
+    if ok { Some(out) } else { None }
+}
+
+fn config_get_color(key: &str) -> Option<ghostty_config_color_s> {
+    let config = GhosttyApp::config();
+    if config.is_null() {
+        return None;
+    }
+    let key_c = CString::new(key).ok()?;
+    let mut out = ghostty_config_color_s::default();
+    let ok = unsafe {
+        ghostty_config_get(
+            config,
+            &mut out as *mut ghostty_config_color_s as *mut std::os::raw::c_void,
+            key_c.as_ptr(),
+            key.len(),
+        )
+    };
+    if ok { Some(out) } else { None }
+}
+
+// Works for enum fields (Ghostty writes @tagName static C string)
+// and ?[:0]const u8 optional-string fields (writes pointer-or-null).
+fn config_get_ptr_str(key: &str) -> Option<String> {
+    let config = GhosttyApp::config();
+    if config.is_null() {
+        return None;
+    }
+    let key_c = CString::new(key).ok()?;
+    let mut out: *const c_char = std::ptr::null();
+    let ok = unsafe {
+        ghostty_config_get(
+            config,
+            &mut out as *mut *const c_char as *mut std::os::raw::c_void,
+            key_c.as_ptr(),
+            key.len(),
+        )
+    };
+    if ok && !out.is_null() {
+        Some(unsafe { CStr::from_ptr(out) }.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+// File-based fallback for config fields the C API doesn't support
+// (RepeatableString types like font-family, and usize like scrollback-limit).
+fn parse_ghostty_config_key(key: &str) -> Option<String> {
+    let content = std::fs::read_to_string(settings::ghostty_config_path()).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(key) {
+            let rest = rest.trim_start();
+            if let Some(value) = rest.strip_prefix('=') {
+                let v = value.trim().to_string();
+                if !v.is_empty() {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn color_to_hex(c: ghostty_config_color_s) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
