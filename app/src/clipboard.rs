@@ -25,16 +25,24 @@ fn surface_from_userdata(userdata: *mut c_void) -> Option<ghostty_surface_t> {
 }
 
 /// Runtime callback: Ghostty requests clipboard content.
+///
+/// Returns `true` when the async read has been started — the apprt then owns
+/// `state` until it is handed back via `ghostty_surface_complete_clipboard_request`.
+/// Returns `false` to tell Ghostty the read couldn't be started; Ghostty will
+/// then free `state` itself. Mismatching this return value (returning void
+/// when Ghostty expects a bool) leaves `state` to whatever junk is in the
+/// return register and causes a use-after-free of `state` from the async
+/// completion path on every paste.
 pub unsafe extern "C" fn read_clipboard_cb(
     userdata: *mut c_void,
     location: ghostty_clipboard_e,
     state: *mut c_void,
-) {
+) -> bool {
     let Some(clipboard) = get_clipboard(location) else {
-        return;
+        return false;
     };
     let Some(surface) = surface_from_userdata(userdata) else {
-        return;
+        return false;
     };
 
     // state is an opaque pointer we must pass back to Ghostty
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn read_clipboard_cb(
             }
         },
     );
+    true
 }
 
 /// Runtime callback: Ghostty confirms clipboard read (auto-confirm for Phase 1).

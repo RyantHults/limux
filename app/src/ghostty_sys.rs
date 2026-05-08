@@ -272,7 +272,7 @@ pub type ghostty_runtime_read_clipboard_cb = Option<
         userdata: *mut c_void,
         location: ghostty_clipboard_e,
         state: *mut c_void,
-    ),
+    ) -> bool,
 >;
 
 pub type ghostty_runtime_confirm_read_clipboard_cb = Option<
