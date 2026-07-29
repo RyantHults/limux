@@ -18,11 +18,25 @@ pub fn is_dark() -> bool {
     IS_DARK.with(|c| c.get())
 }
 
+/// Apply the dark variant of the current GTK theme by setting
+/// `gtk-application-prefer-dark-theme`. This is what makes GTK4
+/// render its chrome (menus, scrollbars, window background) in the
+/// dark variant of the active theme. Without this, on systems like
+/// NixOS+GNOME where only `color-scheme` is set (not the GTK
+/// boolean), the whole window renders light regardless of our
+/// internal `is_dark()` value.
+fn apply_gtk_theme(dark: bool) {
+    if let Some(settings) = gtk4::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(dark);
+    }
+}
+
 /// Initialize color scheme detection and connect change listeners.
 /// Must be called after the GtkApplication is active (display available).
 pub fn init() {
     let dark = detect_color_scheme();
     IS_DARK.with(|c| c.set(dark));
+    apply_gtk_theme(dark);
 
     // Listen for GTK setting changes
     if let Some(settings) = gtk4::Settings::default() {
@@ -40,6 +54,18 @@ pub fn init() {
     // Also try the portal D-Bus signal for Wayland compositors that set
     // color-scheme without updating GTK properties directly.
     connect_portal_signal();
+
+    // Also listen to direct GSettings changes — covers setups where the
+    // portal layer is misconfigured or not running (common on NixOS).
+    if let Some(settings) = std::panic::catch_unwind(|| {
+        gtk4::gio::Settings::new("org.gnome.desktop.interface")
+    })
+    .ok()
+    {
+        settings.connect_changed(Some("color-scheme"), |_settings, _key| {
+            on_scheme_changed();
+        });
+    }
 }
 
 /// Detect whether the system prefers a dark color scheme.
@@ -59,10 +85,16 @@ fn detect_color_scheme() -> bool {
         }
     }
 
-    // 2. Try freedesktop portal color-scheme via GSettings
+    // 2. Try freedesktop portal color-scheme via D-Bus (GSettings)
     //    color-scheme: 0 = no preference, 1 = prefer dark, 2 = prefer light
     if let Ok(portal_settings) = gio_portal_color_scheme() {
         return portal_settings == 1;
+    }
+
+    // 3. Direct GSettings read — bypasses the portal, works on NixOS
+    //    where the portal backends are often not started.
+    if let Some(dark) = gnome_color_scheme() {
+        return dark;
     }
 
     false
@@ -92,11 +124,41 @@ fn gio_portal_color_scheme() -> Result<u32, ()> {
         gtk4::gio::Cancellable::NONE,
     ).map_err(|_| ())?;
 
-    // Result is (v,) where v is a variant containing a u32
+    // org.freedesktop.portal.Settings.Read signature is (s, s) -> (v).
+    // The reply is a tuple of one variant; the variant's content is the
+    // actual value (a u32 for color-scheme), not another wrapped variant.
     let outer = result.child_value(0);
-    // The portal wraps the value in a variant
-    let inner = outer.get::<glib::Variant>().ok_or(())?;
-    inner.get::<u32>().ok_or(())
+    let val = outer.get::<u32>().ok_or(())?;
+    Ok(val)
+}
+
+/// Direct GSettings read of org.gnome.desktop.interface color-scheme.
+///
+/// Mirrors what libadwaita does when `ADW_DISABLE_PORTAL=1`: reads dconf
+/// directly, bypassing the xdg-desktop-portal layer entirely. This is
+/// the most reliable path on NixOS where the portal backends are often
+/// not started or the schemas are not in the default `XDG_DATA_DIRS`.
+///
+/// Returns:
+///   `Some(true)`  — prefer-dark
+///   `Some(false)` — default / prefer-light
+///   `None`        — schema not found, key missing, or other error
+fn gnome_color_scheme() -> Option<bool> {
+    let settings = std::panic::catch_unwind(|| {
+        gtk4::gio::Settings::new("org.gnome.desktop.interface")
+    })
+    .ok();
+    let settings = match settings {
+        Some(s) => s,
+        None => return None,
+    };
+
+    // color-scheme: 0 = default, 1 = prefer-dark, 2 = prefer-light
+    let val = std::panic::catch_unwind(|| settings.enum_("color-scheme")).ok();
+    match val {
+        Some(v) => Some(v == 1),
+        None => None,
+    }
 }
 
 /// Connect to the portal's SettingChanged D-Bus signal for runtime updates.
@@ -132,6 +194,7 @@ fn on_scheme_changed() {
     let old_dark = IS_DARK.with(|c| c.get());
     if new_dark != old_dark {
         IS_DARK.with(|c| c.set(new_dark));
+        apply_gtk_theme(new_dark);
         crate::sidebar::reload_css(new_dark);
     }
 }
