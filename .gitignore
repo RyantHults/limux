@@ -36,3 +36,6 @@ tmp-*/
 
 # Claude Code per-user settings
 .claude/settings.local.json
+
+# Build outputs (e.g. AppImage from scripts/build-appimage.sh)
+/dist/
