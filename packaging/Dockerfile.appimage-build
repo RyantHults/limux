@@ -1,0 +1,60 @@
+# Dockerfile.appimage-build — reproducible build environment for limux AppImage.
+#
+# Build:  docker build -f packaging/Dockerfile.appimage-build -t limux-builder .
+# Run:    docker run --rm -v $(pwd):/src limux-builder
+# Output: dist/limux-x86_64.AppImage on the host (mount point: /src)
+#
+# Base: ubuntu:24.04. Chosen because WebKitGTK 6.0 first appeared in this
+# release — building on an older base would force a backport with no
+# upside: the resulting glibc 2.39 floor covers every distro limux
+# targets (Ubuntu 24.04+, Debian 13+, Fedora 38+, Arch).
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ZIG_VERSION=0.15.2
+
+# System dependencies: build tools, GTK4 + WebKitGTK 6.0 dev headers,
+# and the small set of utilities the AppImage bundler needs at build
+# time (patchelf, librsvg2-common for SVG->PNG icon conversion,
+# desktop-file-utils for AppImage metadata validation).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config cmake \
+    libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev \
+    libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
+    libxinerama-dev libxrandr-dev libwayland-dev \
+    libgdk-pixbuf-2.0-dev libglib2.0-dev libcairo2-dev libpango1.0-dev \
+    libglib2.0-bin librsvg2-common \
+    libfuse2 patchelf file curl ca-certificates \
+    desktop-file-utils gettext python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust (stable, minimal profile — rustc + cargo only). The 2024 edition
+# is supported since Rust 1.85.0, so no extra toolchain components needed.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Zig 0.15.2. The 0.15.x release series renamed the archive so the
+# architecture comes before the version: zig-x86_64-linux-0.15.2.tar.xz.
+# The pre-0.15 naming (zig-linux-x86_64-<ver>.tar.xz) returns 404.
+RUN curl -fsSL \
+    "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
+    | tar -xJ -C /usr/local \
+    && ln -s "/usr/local/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig \
+    && /usr/local/bin/zig version
+
+WORKDIR /src
+
+# Full build pipeline: libghostty (Zig) -> limux + limux-cli (Rust) -> AppImage.
+# build-appimage.sh expects the source to be bind-mounted at /src and writes
+# the final artifact to dist/ relative to REPO_ROOT (which resolves to /src
+# in the container, mounted to the host working directory).
+CMD ["bash", "-c", "\
+    set -euo pipefail && \
+    cd ghostty && \
+    zig build -Dapp-runtime=none -Demit-lib-vt=false -Demit-xcframework=false -Doptimize=ReleaseFast && \
+    cd .. && \
+    cargo build --release && \
+    scripts/build-appimage.sh \
+"]
