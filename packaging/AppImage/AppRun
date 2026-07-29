@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# AppRun — AppImage entry point. The bundler wraps this in a chroot
+# that makes the Nix store appear to contain the runtime closure at
+# standard FHS paths, so limux can dlopen libgtk-4, libwebkit2gtk-6.0,
+# libghostty, etc. without any explicit LD_LIBRARY_PATH manipulation.
+set -euo pipefail
+
+# GTK / GIO need to know where to look for schemas, modules, and
+# pixbuf loaders. The bundler puts them in the standard FHS locations,
+# so GTK can find them via its compiled-in paths. We only need to set
+# these if a custom prefix is being used.
+: "${XDG_DATA_DIRS:=$PREFIX/usr/share:/usr/share}"
+: "${XDG_CONFIG_DIRS:=$PREFIX/etc/xdg:/etc/xdg}"
+export XDG_DATA_DIRS XDG_CONFIG_DIRS
+
+# Make the socket path predictable so limux-cli can find it without
+# scraping ps output. limux honors $LIMUX_SOCKET and prints the path
+# it actually used on startup if overridden.
+if [[ -z "${LIMUX_SOCKET:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    export LIMUX_SOCKET="$XDG_RUNTIME_DIR/limux.sock"
+fi
+
+exec "$APPDIR/usr/bin/limux" "$@"

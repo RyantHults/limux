@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=limux
+GenericName=Terminal Workspace
+Comment=Ghostty-powered terminal workspace with browser panels
+Exec=limux %U
+Icon=limux
+Categories=System;TerminalEmulator;
+Keywords=terminal;emulator;browser;workspace;tile;
+Terminal=false
+StartupNotify=true
+StartupWMClass=com.limux.terminal
+X-AppImage-Version=1.0
+X-AppImage-Identifier=limux
+MimeType=text/plain;x-scheme-handler/ssh;
