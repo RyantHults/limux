@@ -44,6 +44,20 @@ cargo build --release
 ./target/release/limux
 ```
 
+## Build a portable AppImage
+
+`scripts/build-appimage.sh` packages limux + libghostty + the GTK/WebKit
+runtime into a single self-contained executable that runs on any modern
+x86_64 Linux distro without host packages beyond a base glibc.
+
+```bash
+# Finish the regular Build step first
+scripts/build-appimage.sh
+```
+
+Output: `dist/limux-x86_64.AppImage` (~35 MB). On NixOS, run the script
+from inside `nix develop`.
+
 ## Run tests
 
 ```bash
