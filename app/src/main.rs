@@ -57,11 +57,16 @@ pub fn close_window() {
 }
 
 fn main() {
+    eprintln!("[limux-icon] creating app with application_id=com.limux.terminal");
     let app = gtk4::Application::new(
         Some("com.limux.terminal"),
         gio::ApplicationFlags::HANDLES_COMMAND_LINE,
     );
-
+    eprintln!("[limux-icon] app created; prgname={:?}", glib::prgname());
+    eprintln!(
+        "[limux-icon] XDG_DATA_DIRS={:?}",
+        std::env::var("XDG_DATA_DIRS").unwrap_or_default()
+    );
     // Register CLI options
     app.add_main_option(
         "working-directory",
@@ -108,6 +113,12 @@ fn main() {
         0
     });
 
+    app.connect_startup(|_app| {
+        eprintln!("[limux-icon] startup handler running (GTK now initialized)");
+        gtk4::Window::set_default_icon_name("limux");
+        eprintln!("[limux-icon] called gtk4::Window::set_default_icon_name(\"limux\")");
+    });
+
     let opts = options.clone();
     app.connect_activate(move |app| {
         // Only activate once
@@ -143,6 +154,43 @@ fn main() {
             .default_width(800)
             .default_height(600)
             .build();
+
+        eprintln!(
+            "[limux-icon] main window built, icon-name={:?}",
+            gtk_window.icon_name()
+        );
+
+        // Probe whether the icon theme can find "limux"
+        {
+            let theme = gtk4::IconTheme::default();
+            let icon_name = "limux";
+            let has = theme.has_icon(icon_name);
+            eprintln!(
+                "[limux-icon] IconTheme::has_icon({}) = {}",
+                icon_name, has
+            );
+            let paintable = theme.lookup_icon(
+                icon_name,
+                &[],
+                256,
+                1,
+                gtk4::TextDirection::Ltr,
+                gtk4::IconLookupFlags::PRELOAD,
+            );
+            let path = paintable
+                .file()
+                .and_then(|f| f.path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<no path>".to_string());
+            let resolved_name = paintable
+                .icon_name()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<none>".to_string());
+            eprintln!(
+                "[limux-icon] IconTheme::lookup_icon({}) -> file={}, icon_name={:?}",
+                icon_name, path, resolved_name
+            );
+        }
 
         // Track window focus for notification suppression
         gtk_window.connect_is_active_notify(move |win| {
