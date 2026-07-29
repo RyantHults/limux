@@ -129,7 +129,59 @@ fn build_general_page(settings: &Settings) -> gtk4::Box {
     });
     page.append(&form_row("Desktop notifications", &notif_switch));
 
+    // Desktop integration
+    append_integrate_section(&page);
+
     page
+}
+
+fn append_integrate_section(parent: &gtk4::Box) {
+    use crate::{install, settings};
+    if !install::is_appimage() {
+        return;
+    }
+
+    if install::is_integrated() {
+        // Already integrated — show an insensitive switch.
+        let sw = gtk4::Switch::new();
+        sw.set_active(true);
+        sw.set_sensitive(false);
+        parent.append(&form_row("Desktop integration", &sw));
+        let sub = gtk4::Label::new(Some("limux is already integrated with your desktop."));
+        sub.set_xalign(0.0);
+        sub.add_css_class("dim-label");
+        parent.append(&sub);
+        return;
+    }
+
+    // Not yet integrated — show an "Integrate" button.
+    let btn = gtk4::Button::with_label("Integrate");
+    let row = form_row("Desktop integration", &btn);
+    parent.append(&row);
+
+    let parent_weak = parent.downgrade();
+    let row_weak = row.downgrade();
+    btn.connect_clicked(move |_| {
+        match install::perform_integration() {
+            Ok(()) => {
+                settings::update(|s| s.general.desktop_integrated = Some(true));
+                if let (Some(parent), Some(row)) = (parent_weak.upgrade(), row_weak.upgrade()) {
+                    parent.remove(&row);
+                    // Rebuild as "already integrated".
+                    let sw = gtk4::Switch::new();
+                    sw.set_active(true);
+                    sw.set_sensitive(false);
+                    parent.append(&form_row("Desktop integration", &sw));
+                    let new_sub =
+                        gtk4::Label::new(Some("limux is already integrated with your desktop."));
+                    new_sub.set_xalign(0.0);
+                    new_sub.add_css_class("dim-label");
+                    parent.append(&new_sub);
+                }
+            }
+            Err(e) => eprintln!("integration failed: {}", e),
+        }
+    });
 }
 
 // ── Keyboard Shortcuts page ────────────────────────────────────────

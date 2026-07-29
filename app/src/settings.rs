@@ -33,6 +33,8 @@ pub struct GeneralSettings {
     pub working_directory: Option<String>,
     pub session_restore: Option<bool>,
     pub notifications_enabled: Option<bool>,
+    pub hide_integrate_prompt: Option<bool>,
+    pub desktop_integrated: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -61,6 +63,16 @@ impl Settings {
     /// Get the effective value for notifications enabled (default: true).
     pub fn notifications_enabled(&self) -> bool {
         self.general.notifications_enabled.unwrap_or(true)
+    }
+
+    /// Get the effective value for hiding the integrate prompt (default: false).
+    pub fn hide_integrate_prompt(&self) -> bool {
+        self.general.hide_integrate_prompt.unwrap_or(false)
+    }
+
+    /// Get the effective value for desktop integration (default: false).
+    pub fn desktop_integrated(&self) -> bool {
+        self.general.desktop_integrated.unwrap_or(false)
     }
 
     /// Get the effective sidebar width (default: 180).
