@@ -1,0 +1,98 @@
+name: Release limux AppImage
+
+# Build and publish a self-contained limux AppImage on every v* tag push.
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Distinct from release-daemon.yml (which fires on limuxd-remote-v* tags).
+# Both release trains can coexist in the same repo without conflict —
+# their tag globs do not overlap.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build AppImage
+    runs-on: ubuntu-24.04
+    env:
+      ZIG_VERSION: "0.15.2"
+      # Required for linuxdeploy + appimagetool to run in containerless CI
+      # (FUSE is unavailable on the runner, so the AppImage runtime must
+      # self-extract instead of mounting).
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      # Avoid the .relr.dyn strip regression in linuxdeploy's bundled
+      # strip on modern binutils.
+      NO_STRIP: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake \
+            libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev \
+            libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
+            libxinerama-dev libxrandr-dev libwayland-dev \
+            libgdk-pixbuf-2.0-dev libglib2.0-dev libcairo2-dev libpango1.0-dev \
+            libglib2.0-bin librsvg2-common \
+            libfuse2 patchelf file curl ca-certificates \
+            desktop-file-utils gettext python3
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          # Same rationale as ci.yml: the .zig-cache restore skips the
+          # zig-out emission that the downstream cargo link depends on.
+          use-cache: false
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build libghostty
+        run: |
+          cd ghostty
+          zig build -Dapp-runtime=none -Demit-lib-vt=false \
+            -Demit-xcframework=false -Doptimize=ReleaseFast
+
+      - name: Build Rust binaries
+        run: cargo build --release
+
+      - name: Build AppImage
+        run: scripts/build-appimage.sh
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: limux-appimage
+          path: dist/limux-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Attach to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download AppImage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: limux-appimage
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/limux-x86_64.AppImage
+          # softprops normalizes refs/tags/<name> to <name> automatically
+          # when no tag_name is provided, so v* tags produce proper releases.
+          generate_release_notes: true
