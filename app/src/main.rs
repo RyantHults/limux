@@ -5,6 +5,8 @@ mod clipboard;
 mod dbus;
 mod ghostty_sys;
 mod input;
+mod install;
+mod install_prompt;
 mod notify;
 mod port_detect;
 mod remote;
@@ -221,9 +223,15 @@ fn main() {
 
         gtk_window.present();
 
+        // Clone before gtk_window is moved into WINDOW
+        let window_for_prompt = gtk_window.clone();
+
         WINDOW.with(|w| {
             *w.borrow_mut() = Some(gtk_window);
         });
+
+        // First-run desktop integration prompt (AppImage only)
+        install_prompt::maybe_show(&window_for_prompt);
 
         // Start system tray and D-Bus service
         tray::start();
