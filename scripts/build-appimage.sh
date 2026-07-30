@@ -649,8 +649,9 @@ else
     # since the first run, but linuxdeploy is idempotent on a populated
     # AppDir — it only re-bundles what's missing.
     #
-    # We re-invoke with --output appimage and an explicit output path
-    # so it lands directly at $OUTPUT.
+    # We re-invoke with --output appimage. The output AppImage is
+    # generated in the parent directory of APPDIR, named after the
+    # AppDir basename; we then move it to the expected path.
     echo ">>> Sealing AppImage (linuxdeploy --output appimage)..."
     "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
@@ -658,8 +659,23 @@ else
         --executable "$APPDIR/usr/bin/limux-cli" \
         --desktop-file "$APPDIR/limux.desktop" \
         --icon-file "$APPDIR/limux.png" \
-        --output appimage \
-        --output-file "$OUTPUT"
+        --output appimage
+
+    # linuxdeploy's output plugin (appimagetool) names the file
+    # <appdir-basename>-<arch>.AppImage in the AppDir parent.
+    GENERATED_APPIMAGE="$(dirname "$APPDIR")/$(basename "$APPDIR")-x86_64.AppImage"
+    if [[ -f "$GENERATED_APPIMAGE" ]]; then
+        mv "$GENERATED_APPIMAGE" "$OUTPUT"
+    else
+        # Fallback: find any .AppImage in the parent dir
+        GENERATED_APPIMAGE=$(find "$(dirname "$APPDIR")" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)
+        if [[ -n "$GENERATED_APPIMAGE" ]]; then
+            mv "$GENERATED_APPIMAGE" "$OUTPUT"
+        else
+            echo "ERROR: linuxdeploy did not produce an AppImage" >&2
+            exit 1
+        fi
+    fi
     chmod +x "$OUTPUT"
 fi
 
