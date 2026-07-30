@@ -579,7 +579,7 @@ fn build_about_page() -> gtk4::Box {
     title.add_css_class("title-1");
     page.append(&title);
 
-    let version = gtk4::Label::new(Some("Version 0.1.0"));
+    let version = gtk4::Label::new(Some(&format!("Version {}", env!("CARGO_PKG_VERSION"))));
     version.add_css_class("dim-label");
     page.append(&version);
 

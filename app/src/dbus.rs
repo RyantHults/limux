@@ -101,7 +101,7 @@ impl LimuxInterface {
     }
 
     fn version(&self) -> String {
-        "limux 0.1.0".into()
+        format!("limux {}", env!("CARGO_PKG_VERSION"))
     }
 
     // ── Workspace ──────────────────────────────────────────────

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a self-contained AppImage for limux.
 #
-# Output: dist/limux-x86_64.AppImage
+# Output: dist/limux-<version>-x86_64.AppImage
 #
 # What this does (default / system path):
 #   1. Verifies the prebuilt artifacts (target/release/limux, etc.)
@@ -15,7 +15,7 @@
 #   8. Patches the binary rpath + interpreter (FHS-reset)
 #   9. Writes AppRun with --install self-install + env wiring
 #  10. Stages Adwaita theme files from libgtk-4.so GResources
-#  11. linuxdeploy produces dist/limux-x86_64.AppImage
+#  11. linuxdeploy produces dist/limux-<version>-x86_64.AppImage
 #
 # The result is a single .AppImage file that runs on any modern Linux
 # distro (Ubuntu 22.04+, Fedora 38+, Arch) with no nix install required.
@@ -30,6 +30,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# Extract version from Cargo.toml for versioned AppImage naming.
+VERSION=$(grep -m1 '^version' app/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+if [[ -z "$VERSION" ]]; then
+    echo "ERROR: could not extract version from app/Cargo.toml" >&2
+    exit 1
+fi
+echo ">>> Building limux v${VERSION} AppImage..."
 
 # --- Option parsing ---
 
@@ -129,6 +137,13 @@ fi
 cp packaging/AppImage/limux.desktop "$APPDIR/usr/share/applications/limux.desktop"
 # Also under the application ID so Wayland's xdg-shell app_id matching works.
 cp packaging/AppImage/limux.desktop "$APPDIR/usr/share/applications/com.limux.terminal.desktop"
+
+# Stamp the real version into the desktop files.
+for df in "$APPDIR/limux.desktop" \
+          "$APPDIR/usr/share/applications/limux.desktop" \
+          "$APPDIR/usr/share/applications/com.limux.terminal.desktop"; do
+    sed -i "s|^X-AppImage-Version=.*|X-AppImage-Version=${VERSION}|" "$df"
+done
 
 # --- Step 2: runtime closure ---
 
@@ -393,6 +408,8 @@ set -e
 
 APPDIR="$(cd "$(dirname "$0")" && pwd)"
 
+LIMUX_APPIMAGE_VERSION=%%VERSION%%
+
 # Symlink the WebKit helper path sentinel to the real helper dir.
 # libwebkitgtk-6.0.so was byte-patched at build time to point at
 # /tmp/limux-webkit-helpers for the WebKit*Process executables.
@@ -407,7 +424,7 @@ fi
 # can see the app in the application menu and Alt+Tab switcher.
 if [[ "${1:-}" == "--install" ]]; then
     set +e
-    echo ">>> Installing limux to ~/.local/share/..."
+    echo ">>> Installing limux v${LIMUX_APPIMAGE_VERSION:-unknown} to ~/.local/share/..."
 
     ICON_SRC="$APPDIR/usr/share/icons/hicolor/scalable/apps/limux.svg"
     HICOLOR_INDEX_SRC="$APPDIR/usr/share/icons/hicolor/index.theme"
@@ -446,23 +463,60 @@ if [[ "${1:-}" == "--install" ]]; then
         done < /proc/self/mountinfo
     fi
 
+    # Read the version from the desktop file we're about to install.
+    NEW_VERSION=""
+    if [[ -f "$DESKTOP_SRC" ]]; then
+        NEW_VERSION=$(grep -m1 '^X-AppImage-Version=' "$DESKTOP_SRC" | cut -d= -f2)
+    fi
+
+    # Check existing desktop files for a previous version.
+    OLD_VERSION=""
+    for existing in "$DESKTOP_DST_DIR/limux.desktop" "$DESKTOP_DST_DIR/com.limux.terminal.desktop"; do
+        if [[ -f "$existing" ]]; then
+            OLD_VERSION=$(grep -m1 '^X-AppImage-Version=' "$existing" | cut -d= -f2)
+            [[ -n "$OLD_VERSION" ]] && break
+        fi
+    done
+
+    # Determine the old AppImage path from the existing desktop file's Exec= line.
+    OLD_APPIMAGE=""
+    if [[ -f "$DESKTOP_DST_DIR/limux.desktop" ]]; then
+        OLD_EXEC=$(grep -m1 '^Exec=' "$DESKTOP_DST_DIR/limux.desktop" | cut -d= -f2-)
+        # Strip quotes and any arguments (%U, etc.)
+        OLD_APPIMAGE=$(echo "$OLD_EXEC" | sed 's/^"//;s/"$//;s/ %U$//;s/ .*//')
+        # Only keep it if it looks like an AppImage path
+        if [[ "$OLD_APPIMAGE" != *.AppImage ]]; then
+            OLD_APPIMAGE=""
+        fi
+    fi
+
     rewrite_exec() {
         local file="$1"
         if [[ -n "$APPIMAGE_PATH" && -f "$file" ]]; then
-            sed -i "s|^Exec=limux|Exec=\"$APPIMAGE_PATH\"|" "$file"
+            sed -i "s|^Exec=.*|Exec=\"$APPIMAGE_PATH\" %U|" "$file"
             echo "  rewrote Exec= in $file"
         fi
     }
 
-    if [[ -f "$DESKTOP_SRC" ]]; then
-        cp "$DESKTOP_SRC" "$DESKTOP_DST_DIR/limux.desktop" && \
-            rewrite_exec "$DESKTOP_DST_DIR/limux.desktop" && \
-            echo "  desktop: $DESKTOP_DST_DIR/limux.desktop"
-    fi
-    if [[ -f "$WAYLAND_DESKTOP_SRC" ]]; then
-        cp "$WAYLAND_DESKTOP_SRC" "$DESKTOP_DST_DIR/com.limux.terminal.desktop" && \
-            rewrite_exec "$DESKTOP_DST_DIR/com.limux.terminal.desktop" && \
-            echo "  desktop (wayland): $DESKTOP_DST_DIR/com.limux.terminal.desktop"
+    if [[ -n "$NEW_VERSION" && -n "$OLD_VERSION" && "$NEW_VERSION" == "$OLD_VERSION" ]]; then
+        echo "  desktop entry already at v${OLD_VERSION}, updating Exec path only"
+        # Just update the Exec path in case the AppImage moved.
+        rewrite_exec "$DESKTOP_DST_DIR/limux.desktop"
+        rewrite_exec "$DESKTOP_DST_DIR/com.limux.terminal.desktop"
+    else
+        if [[ -n "$OLD_VERSION" ]]; then
+            echo "  upgrading desktop entry from v${OLD_VERSION} to v${NEW_VERSION}"
+        fi
+        if [[ -f "$DESKTOP_SRC" ]]; then
+            cp "$DESKTOP_SRC" "$DESKTOP_DST_DIR/limux.desktop" && \
+                rewrite_exec "$DESKTOP_DST_DIR/limux.desktop" && \
+                echo "  desktop: $DESKTOP_DST_DIR/limux.desktop"
+        fi
+        if [[ -f "$WAYLAND_DESKTOP_SRC" ]]; then
+            cp "$WAYLAND_DESKTOP_SRC" "$DESKTOP_DST_DIR/com.limux.terminal.desktop" && \
+                rewrite_exec "$DESKTOP_DST_DIR/com.limux.terminal.desktop" && \
+                echo "  desktop (wayland): $DESKTOP_DST_DIR/com.limux.terminal.desktop"
+        fi
     fi
 
     if [[ -z "$APPIMAGE_PATH" ]]; then
@@ -477,6 +531,37 @@ if [[ "${1:-}" == "--install" ]]; then
         gtk-update-icon-cache -f -t "$HICOLOR_DST_DIR" 2>/dev/null && echo "  refreshed icon cache"
     fi
 
+    # Offer to delete old AppImage versions.
+    if [[ -n "$APPIMAGE_PATH" && -f "$APPIMAGE_PATH" ]]; then
+        APPIMAGE_DIR="$(dirname "$APPIMAGE_PATH")"
+        OLD_APPIMAGES=()
+        for candidate in "$APPIMAGE_DIR"/limux-*-x86_64.AppImage; do
+            [[ -f "$candidate" ]] || continue
+            # Skip the current AppImage
+            real_current="$(realpath "$APPIMAGE_PATH" 2>/dev/null || echo "$APPIMAGE_PATH")"
+            real_candidate="$(realpath "$candidate" 2>/dev/null || echo "$candidate")"
+            if [[ "$real_candidate" != "$real_current" ]]; then
+                OLD_APPIMAGES+=("$candidate")
+            fi
+        done
+        if [[ ${#OLD_APPIMAGES[@]} -gt 0 ]]; then
+            echo ""
+            echo "  Found ${#OLD_APPIMAGES[@]} old AppImage(s):"
+            for old in "${OLD_APPIMAGES[@]}"; do
+                echo "    - $old ($(du -h "$old" | cut -f1))"
+            done
+            read -r -p "  Delete old version(s)? [y/N] " answer
+            if [[ "$answer" =~ ^[Yy]$ ]]; then
+                for old in "${OLD_APPIMAGES[@]}"; do
+                    rm -f "$old" && echo "  deleted: $old"
+                done
+            else
+                echo "  keeping old version(s)"
+            fi
+        fi
+    fi
+
+    echo ""
     echo ">>> Done. limux should now appear in your app menu and Alt+Tab."
     echo ">>> You can launch it normally with: $APPDIR/AppRun"
     exit 0
@@ -511,6 +596,9 @@ fi
 exec "$APPDIR/usr/bin/limux" "$@"
 APPRUN_EOF
 chmod +x "$APPDIR/AppRun"
+
+# Stamp the version into AppRun so --install can report it.
+sed -i "s|LIMUX_APPIMAGE_VERSION=%%VERSION%%|LIMUX_APPIMAGE_VERSION=${VERSION}|" "$APPDIR/AppRun"
 
 # --- Step 5: GTK4 Adwaita theme on disk ---
 #
@@ -564,7 +652,7 @@ fi
 
 # --- Step 6: build the AppImage ---
 
-OUTPUT="$DIST_DIR/limux-x86_64.AppImage"
+OUTPUT="$DIST_DIR/limux-${VERSION}-x86_64.AppImage"
 
 if (( USE_NIX )); then
     # The legacy Nix path: appimagetool directly on the AppDir. We

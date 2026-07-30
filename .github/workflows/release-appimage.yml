@@ -74,7 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: limux-appimage
-          path: dist/limux-x86_64.AppImage
+          path: dist/limux-*-x86_64.AppImage
           if-no-files-found: error
 
   release:
@@ -92,7 +92,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/limux-x86_64.AppImage
+          files: dist/limux-*-x86_64.AppImage
           # softprops normalizes refs/tags/<name> to <name> automatically
           # when no tag_name is provided, so v* tags produce proper releases.
           generate_release_notes: true

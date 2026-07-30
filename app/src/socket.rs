@@ -110,7 +110,7 @@ fn handle_command(cmd: &str) -> String {
 
     match command {
         "ping" => "OK pong".to_string(),
-        "version" => "OK limux 0.1.0".to_string(),
+        "version" => format!("OK limux {}", env!("CARGO_PKG_VERSION")),
         "list_surfaces" => {
             let lines = crate::window::list_surfaces_detailed();
             if lines.is_empty() {
