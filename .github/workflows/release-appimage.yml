@@ -89,6 +89,11 @@ jobs:
           name: limux-appimage
           path: dist
 
+      - name: Set executable permissions
+        # GitHub releases don't preserve file permissions. Ensure the
+        # AppImage is executable before attaching it to the release.
+        run: chmod +x dist/limux-*-x86_64.AppImage
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
