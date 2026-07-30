@@ -661,20 +661,29 @@ else
         --icon-file "$APPDIR/limux.png" \
         --output appimage
 
-    # linuxdeploy's output plugin (appimagetool) names the file
-    # <appdir-basename>-<arch>.AppImage in the AppDir parent.
-    GENERATED_APPIMAGE="$(dirname "$APPDIR")/$(basename "$APPDIR")-x86_64.AppImage"
-    if [[ -f "$GENERATED_APPIMAGE" ]]; then
+    # appimagetool generates an AppImage named after the AppDir in the
+    # current working directory (e.g., limux-x86_64.AppImage).
+    GENERATED_APPIMAGE=""
+    for candidate in \
+        "$(dirname "$APPDIR")/limux-x86_64.AppImage" \
+        "$REPO_ROOT/limux-x86_64.AppImage" \
+        "$PWD/limux-x86_64.AppImage"; do
+        if [[ -f "$candidate" ]]; then
+            GENERATED_APPIMAGE="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$GENERATED_APPIMAGE" ]]; then
+        # Fallback: find any .AppImage in common locations
+        GENERATED_APPIMAGE=$(find "$REPO_ROOT" "$(dirname "$APPDIR")" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)
+    fi
+    if [[ -n "$GENERATED_APPIMAGE" ]]; then
         mv "$GENERATED_APPIMAGE" "$OUTPUT"
     else
-        # Fallback: find any .AppImage in the parent dir
-        GENERATED_APPIMAGE=$(find "$(dirname "$APPDIR")" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)
-        if [[ -n "$GENERATED_APPIMAGE" ]]; then
-            mv "$GENERATED_APPIMAGE" "$OUTPUT"
-        else
-            echo "ERROR: linuxdeploy did not produce an AppImage" >&2
-            exit 1
-        fi
+        echo "ERROR: linuxdeploy did not produce an AppImage" >&2
+        ls -la "$REPO_ROOT"/*.AppImage 2>/dev/null || echo "  (no .AppImage files in repo root)" >&2
+        ls -la "$(dirname "$APPDIR")"/*.AppImage 2>/dev/null || echo "  (no .AppImage files in AppDir parent)" >&2
+        exit 1
     fi
     chmod +x "$OUTPUT"
 fi
