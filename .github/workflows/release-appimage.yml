@@ -43,7 +43,7 @@ jobs:
             libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
             libxinerama-dev libxrandr-dev libwayland-dev \
             libgdk-pixbuf-2.0-dev libglib2.0-dev libcairo2-dev libpango1.0-dev \
-            libglib2.0-bin librsvg2-common \
+            libglib2.0-bin librsvg2-common librsvg2-bin \
             libfuse2 patchelf file curl ca-certificates \
             desktop-file-utils gettext python3
 
