@@ -11,6 +11,11 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
   workflow_dispatch:
 
 permissions:
@@ -69,6 +74,38 @@ jobs:
 
       - name: Build AppImage
         run: scripts/build-appimage.sh
+
+      - name: Verify AppImage structure
+        # Catch packaging regressions at CI time. Type-2 AppImages report
+        # as `static-pie linked, stripped` (the loader's ELF metadata),
+        # so `file(1)` alone isn't a reliable check. The one invariant
+        # every valid AppImage has is an embedded squashfs filesystem,
+        # identified by the `hsqs` magic bytes. Also: any lib symlink
+        # pointing at /nix/store is a fatal misconfig, since the
+        # AppImage must be self-contained and Nix-store paths only
+        # resolve on NixOS.
+        run: |
+          set -euo pipefail
+          APPIMAGE="$(ls dist/limux-*-x86_64.AppImage | head -1)"
+          echo ">>> file: $(file "$APPIMAGE")"
+          if ! grep -qa $'hsqs' "$APPIMAGE" 2>/dev/null; then
+            echo "::error::$APPIMAGE has no squashfs magic (not an AppImage)"
+            exit 1
+          fi
+          TEMP_DIR="$(mktemp -d)"
+          unsquashfs -q -d "$TEMP_DIR/root" "$APPIMAGE"
+          REAL_COUNT=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type f 2>/dev/null | wc -l)
+          LINK_COUNT=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type l 2>/dev/null | wc -l)
+          NIX_LINKS=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type l \
+                      -exec readlink {} \; 2>/dev/null | grep -c '/nix/store' || true)
+          echo ">>> real .so* files: $REAL_COUNT"
+          echo ">>> .so* symlinks:   $LINK_COUNT"
+          echo ">>> /nix/store symlinks: $NIX_LINKS"
+          if (( NIX_LINKS > 0 )); then
+            echo "::error::Found $NIX_LINKS libraries symlinked to /nix/store — not portable"
+            exit 1
+          fi
+          rm -rf "$TEMP_DIR"
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
