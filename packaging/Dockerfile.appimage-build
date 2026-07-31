@@ -13,6 +13,12 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV ZIG_VERSION=0.15.2
+# Required for linuxdeploy (and any other AppImage we run inside the
+# container) to self-extract instead of mounting via FUSE. FUSE is
+# not available in rootless docker, so without this, the linuxdeploy
+# AppImage fails with "required file not found" at execve time.
+# Mirrors the env var set by .github/workflows/release-appimage.yml.
+ENV APPIMAGE_EXTRACT_AND_RUN=1
 
 # System dependencies: build tools, GTK4 + WebKitGTK 6.0 dev headers,
 # and the small set of utilities the AppImage bundler needs at build
@@ -24,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev \
     libxinerama-dev libxrandr-dev libwayland-dev \
     libgdk-pixbuf-2.0-dev libglib2.0-dev libcairo2-dev libpango1.0-dev \
-    libglib2.0-bin librsvg2-common \
-    libfuse2 patchelf file curl ca-certificates \
+    libglib2.0-bin librsvg2-common librsvg2-bin \
+    libfuse2 patchelf file curl ca-certificates squashfs-tools \
     desktop-file-utils gettext python3 \
     && rm -rf /var/lib/apt/lists/*
 
