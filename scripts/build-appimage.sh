@@ -28,6 +28,48 @@
 
 set -euo pipefail
 
+# Extract a type-2 AppImage by locating its embedded squashfs.
+#
+# Type-2 AppImages are static-pie ELFs with a squashfs filesystem appended
+# at a non-zero offset. Plain `unsquashfs -d DEST FILE` only checks offset
+# 0, which fails. This helper:
+#   1. Searches for the squashfs superblock magic ('hsqs' = 0x68 0x73 0x71 0x73)
+#   2. Validates each candidate with `unsquashfs -s` (header-only check)
+#   3. Extracts with the correct offset
+#
+# Required in rootless docker where FUSE + binfmt_misc are unavailable
+# and the AppImage's own runtime stub can't run.
+#
+# Usage: extract_appimage <AppImage> <dest-dir>
+extract_appimage() {
+    local appimage="$1"
+    local dest="$2"
+
+    if [[ ! -f "$appimage" ]]; then
+        echo "ERROR: $appimage not found" >&2
+        return 1
+    fi
+
+    local offset=""
+    while IFS=: read -r candidate _; do
+        if unsquashfs -s -o "$candidate" "$appimage" >/dev/null 2>&1; then
+            offset="$candidate"
+            break
+        fi
+    done < <(grep -boa $'hsqs' "$appimage" 2>/dev/null)
+
+    if [[ -z "$offset" ]]; then
+        echo "ERROR: no valid squashfs superblock found in $appimage" >&2
+        return 1
+    fi
+
+    rm -rf "$dest"
+    if ! unsquashfs -q -d "$dest" -o "$offset" "$appimage"; then
+        echo "ERROR: unsquashfs failed at offset $offset" >&2
+        return 1
+    fi
+}
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -258,9 +300,29 @@ else
             -o "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
         chmod +x "$TOOLS_DIR/linuxdeploy-plugin-gtk.sh"
     fi
-    # linuxdeploy searches for plugins alongside the binary OR on PATH.
-    # The .sh extension is allowed; linuxdeploy matches
-    # `linuxdeploy-plugin-<name>.*`.
+    # linuxdeploy is shipped as a type-2 AppImage whose runtime depends
+    # on a kernel-side binfmt_misc handler (or appimaged) to self-extract
+    # at exec time. That handler is missing in rootless docker and some
+    # minimal CI images, so direct execution returns ENOENT. We extract
+    # the AppImage ourselves with unsquashfs and run the inner AppRun
+    # directly. This is the same pattern the --use-nix path uses for
+    # appimagetool (see below at the appimagetool extraction block).
+    LINUXDEPLOY_EXTRACTED="$TOOLS_DIR/linuxdeploy-extracted"
+    LINUXDEPLOY_BIN="$LINUXDEPLOY_EXTRACTED/AppRun"
+    if [[ ! -x "$LINUXDEPLOY_BIN" ]]; then
+        echo "    Extracting linuxdeploy AppImage (avoids binfmt_misc dependency)..."
+        if ! extract_appimage "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" \
+                "$LINUXDEPLOY_EXTRACTED"; then
+            echo "ERROR: failed to extract linuxdeploy AppImage" >&2
+            echo "  Is squashfs-tools installed? (apt install squashfs-tools)" >&2
+            exit 1
+        fi
+        chmod +x "$LINUXDEPLOY_BIN"
+    fi
+    # linuxdeploy discovers plugins by looking on PATH for entries
+    # matching `linuxdeploy-plugin-<name>.*`. Keep $TOOLS_DIR on PATH so
+    # the .sh plugin we downloaded above is findable by the inner
+    # linuxdeploy binary.
     export PATH="$TOOLS_DIR:${PATH}"
 
     # REQUIRED for linuxdeploy to run in CI / container environments
@@ -297,7 +359,9 @@ else
     # next to the AppDir by default; we'll move it to dist/ at the
     # end (after the WebKit patch, which has to happen against the
     # AppDir's .so files BEFORE the AppImage is sealed).
-    "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" \
+    # Note: $LINUXDEPLOY_BIN is the extracted AppRun, not the .AppImage
+    # file directly — see the extraction block above.
+    "$LINUXDEPLOY_BIN" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/limux" \
         --executable "$APPDIR/usr/bin/limux-cli" \
@@ -405,6 +469,7 @@ cat > "$APPDIR/AppRun" <<'APPRUN_EOF'
 #!/usr/bin/env bash
 # AppRun — entry point for the AppImage runtime.
 set -e
+set -x
 
 APPDIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -416,7 +481,9 @@ LIMUX_APPIMAGE_VERSION=%%VERSION%%
 # Create the symlink lazily on first run so the AppImage stays
 # relocatable. Use ln -sfn to atomically replace any stale link.
 if [[ -d "$APPDIR/usr/lib/webkitgtk-6.0" ]]; then
+    echo "[AppRun] Creating webkit helpers symlink..."
     ln -sfn "$APPDIR/usr/lib/webkitgtk-6.0" /tmp/limux-webkit-helpers
+    echo "[AppRun] Webkit helpers symlink created"
 fi
 
 # Self-install: copy the icon and desktop file to the user's XDG
@@ -593,6 +660,8 @@ if [[ -z "${LIMUX_SOCKET:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
     export LIMUX_SOCKET="$XDG_RUNTIME_DIR/limux.sock"
 fi
 
+echo "[AppRun] DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY GDK_BACKEND=$GDK_BACKEND"
+echo "[AppRun] Executing limux binary..."
 exec "$APPDIR/usr/bin/limux" "$@"
 APPRUN_EOF
 chmod +x "$APPDIR/AppRun"
@@ -737,11 +806,15 @@ else
     # since the first run, but linuxdeploy is idempotent on a populated
     # AppDir — it only re-bundles what's missing.
     #
-    # We re-invoke with --output appimage. The output AppImage is
-    # generated in the parent directory of APPDIR, named after the
-    # AppDir basename; we then move it to the expected path.
+    # We re-invoke with --output appimage (the built-in appimage plugin).
+    # linuxdeploy's plugin system treats the value of --output as a plugin
+    # name to look up, not an output path. The resulting AppImage lands in
+    # $PWD with a name derived from the AppDir basename — the exact
+    # naming rule varies across linuxdeploy releases, so we don't try to
+    # predict it; we just find the freshest .AppImage in $PWD after the
+    # seal step below.
     echo ">>> Sealing AppImage (linuxdeploy --output appimage)..."
-    "$TOOLS_DIR/linuxdeploy-x86_64.AppImage" \
+    "$LINUXDEPLOY_BIN" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/limux" \
         --executable "$APPDIR/usr/bin/limux-cli" \
@@ -749,31 +822,48 @@ else
         --icon-file "$APPDIR/limux.png" \
         --output appimage
 
-    # appimagetool generates an AppImage named after the AppDir in the
-    # current working directory (e.g., limux-x86_64.AppImage).
+    # linuxdeploy (via --output appimage) emits the sealed AppImage into
+    # $PWD, but the exact filename it picks depends on the AppDir
+    # basename and varies across linuxdeploy releases. Rather than chase
+    # the naming rule, find the freshest .AppImage in $PWD that this
+    # build script just produced. We exclude $OUTPUT itself.
     GENERATED_APPIMAGE=""
-    for candidate in \
-        "$(dirname "$APPDIR")/limux-x86_64.AppImage" \
-        "$REPO_ROOT/limux-x86_64.AppImage" \
-        "$PWD/limux-x86_64.AppImage"; do
-        if [[ -f "$candidate" ]]; then
-            GENERATED_APPIMAGE="$candidate"
-            break
-        fi
-    done
-    if [[ -z "$GENERATED_APPIMAGE" ]]; then
-        # Fallback: find any .AppImage in common locations
-        GENERATED_APPIMAGE=$(find "$REPO_ROOT" "$(dirname "$APPDIR")" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)
-    fi
+    while IFS= read -r candidate; do
+        [[ -z "$candidate" ]] && continue
+        [[ "$candidate" == "$OUTPUT" ]] && continue
+        GENERATED_APPIMAGE="$candidate"
+        break
+    done < <(find "$PWD" -maxdepth 1 -name '*.AppImage' -type f \
+        -newer "$0" -printf '%T@ %p\n' 2>/dev/null \
+        | sort -rn | cut -d' ' -f2-)
     if [[ -n "$GENERATED_APPIMAGE" ]]; then
         mv "$GENERATED_APPIMAGE" "$OUTPUT"
+
+        # Validate the output is actually a sealed AppImage. We can't rely
+        # on `file(1)` alone: type-2 AppImages report as `static-pie linked,
+        # stripped` (the loader's ELF metadata), and type-1 AppImages
+        # report as `dynamically linked` with the loader's interpreter.
+        # The one invariant every valid AppImage has is an embedded
+        # squashfs filesystem, identified by the `hsqs` magic bytes.
+        # Search for the magic and verify the superblock is parseable.
+        if ! grep -qa $'hsqs' "$OUTPUT" 2>/dev/null; then
+            echo "ERROR: $OUTPUT has no squashfs magic (not an AppImage)" >&2
+            file "$OUTPUT" >&2
+            echo "ERROR: candidate that was moved:" >&2
+            ls -la "$GENERATED_APPIMAGE" 2>/dev/null >&2 || true
+            echo "ERROR: contents of expected output directory:" >&2
+            ls -la "$PWD"/*.AppImage 2>/dev/null >&2 || true
+            rm -f "$OUTPUT"
+            exit 1
+        fi
+
+        chmod +x "$OUTPUT"
     else
         echo "ERROR: linuxdeploy did not produce an AppImage" >&2
         ls -la "$REPO_ROOT"/*.AppImage 2>/dev/null || echo "  (no .AppImage files in repo root)" >&2
         ls -la "$(dirname "$APPDIR")"/*.AppImage 2>/dev/null || echo "  (no .AppImage files in AppDir parent)" >&2
         exit 1
     fi
-    chmod +x "$OUTPUT"
 fi
 
 echo ""
