@@ -92,8 +92,26 @@ jobs:
             echo "::error::$APPIMAGE has no squashfs magic (not an AppImage)"
             exit 1
           fi
+          # Type-2 AppImages have the squashfs at a non-zero offset, so
+          # plain `unsquashfs` (which assumes offset 0) fails. Find the
+          # offset by searching for the `hsqs` magic and validate the
+          # first candidate with `unsquashfs -s` (header-only check).
+          # Mirrors the extract_appimage() helper in build-appimage.sh.
+          SQUASHFS_OFFSET=""
+          while IFS=: read -r candidate _; do
+            [[ -z "$candidate" ]] && continue
+            if unsquashfs -s -o "$candidate" "$APPIMAGE" >/dev/null 2>&1; then
+              SQUASHFS_OFFSET="$candidate"
+              break
+            fi
+          done < <(grep -boa $'hsqs' "$APPIMAGE" 2>/dev/null || true)
+          if [[ -z "$SQUASHFS_OFFSET" ]]; then
+            echo "::error::$APPIMAGE has hsqs magic but no valid squashfs superblock"
+            exit 1
+          fi
+          echo ">>> squashfs offset: $SQUASHFS_OFFSET"
           TEMP_DIR="$(mktemp -d)"
-          unsquashfs -q -d "$TEMP_DIR/root" "$APPIMAGE"
+          unsquashfs -q -d "$TEMP_DIR/root" -o "$SQUASHFS_OFFSET" "$APPIMAGE"
           REAL_COUNT=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type f 2>/dev/null | wc -l)
           LINK_COUNT=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type l 2>/dev/null | wc -l)
           NIX_LINKS=$(find "$TEMP_DIR/root/usr/lib" -name '*.so*' -type l \
