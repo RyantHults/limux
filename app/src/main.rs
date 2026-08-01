@@ -62,12 +62,8 @@ fn main() {
     eprintln!("[limux-icon] creating app with application_id=com.limux.terminal");
     let app = gtk4::Application::new(
         Some("com.limux.terminal"),
-        gio::ApplicationFlags::HANDLES_COMMAND_LINE,
-    );
-    eprintln!("[limux-icon] app created; prgname={:?}", glib::prgname());
-    eprintln!(
-        "[limux-icon] XDG_DATA_DIRS={:?}",
-        std::env::var("XDG_DATA_DIRS").unwrap_or_default()
+        gio::ApplicationFlags::HANDLES_COMMAND_LINE
+            | gio::ApplicationFlags::NON_UNIQUE,
     );
     // Register CLI options
     app.add_main_option(
