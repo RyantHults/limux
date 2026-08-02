@@ -195,9 +195,9 @@ pub const GHOSTTY_ACTION_TAG_CLOSE_ALL_WINDOWS: ghostty_action_tag_e = 5;
 pub const GHOSTTY_ACTION_TAG_NEW_SPLIT: ghostty_action_tag_e = 4;
 pub const GHOSTTY_ACTION_TAG_GOTO_TAB: ghostty_action_tag_e = 15;
 pub const GHOSTTY_ACTION_TAG_GOTO_SPLIT: ghostty_action_tag_e = 16;
-pub const GHOSTTY_ACTION_TAG_RENDER: ghostty_action_tag_e = 28;
-pub const GHOSTTY_ACTION_TAG_SET_TITLE: ghostty_action_tag_e = 33;
-pub const GHOSTTY_ACTION_TAG_RING_BELL: ghostty_action_tag_e = 49;
+pub const GHOSTTY_ACTION_TAG_RENDER: ghostty_action_tag_e = 27;
+pub const GHOSTTY_ACTION_TAG_SET_TITLE: ghostty_action_tag_e = 32;
+pub const GHOSTTY_ACTION_TAG_RING_BELL: ghostty_action_tag_e = 50;
 
 // Split directions
 pub type ghostty_action_split_direction_e = c_int;
