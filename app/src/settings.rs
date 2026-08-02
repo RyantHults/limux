@@ -35,6 +35,10 @@ pub struct GeneralSettings {
     pub notifications_enabled: Option<bool>,
     pub hide_integrate_prompt: Option<bool>,
     pub desktop_integrated: Option<bool>,
+    pub check_for_updates: Option<bool>,
+    pub update_check_frequency: Option<String>,
+    pub skip_update_version: Option<String>,
+    pub last_update_check: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -73,6 +77,30 @@ impl Settings {
     /// Get the effective value for desktop integration (default: false).
     pub fn desktop_integrated(&self) -> bool {
         self.general.desktop_integrated.unwrap_or(false)
+    }
+
+    /// Get the effective value for automatic update checks (default: true).
+    pub fn check_for_updates(&self) -> bool {
+        self.general.check_for_updates.unwrap_or(true)
+    }
+
+    /// Update check frequency, one of "startup", "daily", "weekly"
+    /// (default: daily).
+    pub fn update_check_frequency(&self) -> String {
+        self.general
+            .update_check_frequency
+            .clone()
+            .unwrap_or_else(|| "daily".to_string())
+    }
+
+    /// Timestamp (unix seconds) of the last update check, if any.
+    pub fn last_update_check(&self) -> Option<i64> {
+        self.general.last_update_check
+    }
+
+    /// Version the user last asked to skip (no prompt until a newer one).
+    pub fn skip_update_version(&self) -> Option<String> {
+        self.general.skip_update_version.clone()
     }
 
     /// Get the effective sidebar width (default: 180).

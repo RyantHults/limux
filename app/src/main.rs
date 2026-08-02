@@ -20,6 +20,7 @@ mod surface;
 mod surfaces;
 mod tab_strip;
 mod tray;
+mod update;
 mod util;
 mod window;
 mod workspace;
@@ -228,6 +229,12 @@ fn main() {
 
         // First-run desktop integration prompt (AppImage only)
         install_prompt::maybe_show(&window_for_prompt);
+
+        // Update check, delayed so it never stacks with the first-run prompt.
+        let window_for_update = window_for_prompt.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(4), move || {
+            update::maybe_check(&window_for_update);
+        });
 
         // Start system tray and D-Bus service
         tray::start();
