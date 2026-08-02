@@ -129,6 +129,42 @@ fn build_general_page(settings: &Settings) -> gtk4::Box {
     });
     page.append(&form_row("Desktop notifications", &notif_switch));
 
+    // Updates
+    page.append(&section_label("Updates"));
+    let update_switch = gtk4::Switch::new();
+    update_switch.set_active(settings.check_for_updates());
+    let update_freq_combo = gtk4::ComboBoxText::new();
+    update_freq_combo.append_text("Every startup");
+    update_freq_combo.append_text("Daily");
+    update_freq_combo.append_text("Weekly");
+    const FREQUENCIES: &[&str] = &["startup", "daily", "weekly"];
+    let current_freq = settings.update_check_frequency();
+    let freq_idx = FREQUENCIES
+        .iter()
+        .position(|&f| f == current_freq)
+        .unwrap_or(1) as u32;
+    update_freq_combo.set_active(Some(freq_idx));
+    update_freq_combo.connect_changed(|combo| {
+        if let Some(idx) = combo.active() {
+            if let Some(&freq) = FREQUENCIES.get(idx as usize) {
+                settings::update(|s| {
+                    s.general.update_check_frequency = Some(freq.to_string());
+                });
+            }
+        }
+    });
+    let freq_combo_for_switch = update_freq_combo.clone();
+    update_switch.connect_active_notify(move |sw| {
+        let active = sw.is_active();
+        settings::update(|s| {
+            s.general.check_for_updates = Some(active);
+        });
+        freq_combo_for_switch.set_sensitive(active);
+    });
+    page.append(&form_row("Check for updates automatically", &update_switch));
+    update_freq_combo.set_sensitive(settings.check_for_updates());
+    page.append(&form_row("Check frequency", &update_freq_combo));
+
     // Desktop integration
     append_integrate_section(&page);
 
