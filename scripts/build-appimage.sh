@@ -105,7 +105,7 @@ fi
 
 if [[ ! -f ghostty/zig-out/lib/ghostty-internal.so ]]; then
     echo "ERROR: libghostty missing." >&2
-    echo "  Run: cd ghostty && zig build -Dapp-runtime=none -Demit-lib-vt=false -Doptimize=ReleaseFast && cd .." >&2
+    echo "  Run: cd ghostty && zig build -Dapp-runtime=none -Demit-lib-vt=false -Doptimize=ReleaseFast -Dcpu=x86_64_v3 && cd .." >&2
     exit 1
 fi
 

@@ -66,8 +66,16 @@ jobs:
       - name: Build libghostty
         run: |
           cd ghostty
+          # -Dcpu=x86_64_v3 (AVX2 baseline): zig's default is the build
+          # machine's native CPU, and GitHub's ubuntu-24.04 runner fleet
+          # is heterogeneous. Without a pin, the same source builds to
+          # different machine code depending on which runner picks up the
+          # job — a newer runner emits AVX-512/EVEX instructions that
+          # SIGILL on older CPUs (the v0.2.2 incident). x86_64_v3 matches
+          # the proven-good 0.2.1 build and runs on any 2013+ x86_64 CPU.
           zig build -Dapp-runtime=none -Demit-lib-vt=false \
-            -Demit-xcframework=false -Doptimize=ReleaseFast
+            -Demit-xcframework=false -Doptimize=ReleaseFast \
+            -Dcpu=x86_64_v3
 
       - name: Build Rust binaries
         run: cargo build --release
