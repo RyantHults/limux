@@ -46,10 +46,23 @@ fi
 echo ">>> Bumping version to ${NEW_VERSION} ..."
 sed -i "s/^version = \".*\"/version = \"${NEW_VERSION}\"/" app/Cargo.toml cli/Cargo.toml
 
+# --- Refresh Cargo.lock ---
+
+# cargo rewrites Cargo.lock to match the bumped Cargo.toml versions. Build
+# (rather than `cargo metadata`) so we also get a "does this release compile"
+# sanity check before committing. Falls back to `nix develop` when cargo is
+# not on PATH (this repo's default dev environment).
+echo ">>> Building to refresh Cargo.lock ..."
+if command -v cargo >/dev/null 2>&1; then
+    cargo build --workspace
+else
+    nix develop --command cargo build --workspace
+fi
+
 # --- Commit version bump ---
 
 echo ">>> Committing version bump ..."
-git add app/Cargo.toml cli/Cargo.toml
+git add app/Cargo.toml cli/Cargo.toml Cargo.lock
 git commit -m "Bump version to ${NEW_VERSION}"
 
 TAG="v${NEW_VERSION}"
