@@ -134,6 +134,9 @@ class limux:
     def new_workspace(self) -> None:
         self._expect_ok(self._send_line("new_workspace"))
 
+    def new_pane_tab(self) -> None:
+        self._expect_ok(self._send_line("new_pane_tab"))
+
     def workspace_count(self) -> int:
         return int(self._expect_ok(self._send_line("workspace_count")))
 
@@ -209,6 +212,12 @@ class limux:
         for line in resp.splitlines():
             entry: dict = {}
             for token in line.split(" "):
+                if token.startswith("cwd="):
+                    entry["cwd"] = token.split("=", 1)[1]
+                    continue
+                if token.startswith("url="):
+                    entry["url"] = token.split("=", 1)[1]
+                    continue
                 if ":" not in token:
                     if token in ("terminal", "browser"):
                         entry["kind"] = token
@@ -221,10 +230,6 @@ class limux:
                     entry["workspace"] = int(val)
                 elif key == "pane":
                     entry["pane"] = int(val)
-                elif token.startswith("cwd="):
-                    entry["cwd"] = token.split("=", 1)[1]
-                elif token.startswith("url="):
-                    entry["url"] = token.split("=", 1)[1]
             out.append(entry)
         return out
 

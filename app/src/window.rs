@@ -2466,7 +2466,7 @@ pub fn goto_tab(idx: i32) {
 // ── Pane tab operations ──────────────────────────────────────────────
 
 /// Add a new tab to the focused pane in the current workspace.
-fn new_pane_tab() {
+pub fn new_pane_tab() {
     with_app_window_mut(|aw| {
         let Some(page) = aw.notebook.current_page() else { return };
         let ws_idx = page as usize;
@@ -2475,9 +2475,17 @@ fn new_pane_tab() {
         let ws_id = aw.workspaces[ws_idx].id;
         let Some(pane_id) = aw.workspaces[ws_idx].focused_pane() else { return };
 
+        // Inherit working directory from the focused pane's active tab
+        let wd = aw.workspaces[ws_idx]
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.tabs.get(p.selected_tab))
+            .and_then(|t| t.working_directory.clone())
+            .or_else(|| aw.working_directory.clone());
+
         let new_surface_id = surfaces::pre_allocate_id();
         let (new_gl_area, _sid_cell) = surface::create_with_id(
-            aw.working_directory.as_deref(),
+            wd.as_deref(),
             aw.command.as_deref(),
             Some(new_surface_id),
         );
