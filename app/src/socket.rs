@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -77,20 +77,60 @@ pub fn start(path: Option<&str>) {
     std::mem::forget(listener);
 }
 
+/// Serve a single accepted client connection without blocking the main loop.
+///
+/// Commands are read asynchronously via a GLib FD source and processed one
+/// complete line at a time. This keeps the main loop free to run ghostty
+/// ticks (title/pwd actions, renders, input) while a control client stays
+/// connected.
 fn handle_client(mut stream: std::os::unix::net::UnixStream) {
-    let Ok(clone) = stream.try_clone() else { return };
-    let reader = BufReader::new(clone);
+    use std::os::unix::io::AsRawFd;
 
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let response = handle_command(line.trim());
-        // Multi-line responses use length-prefix: "OK+<len>\n<data>"
-        if response.starts_with("OK+") {
-            let _ = write!(stream, "{response}");
-        } else {
-            let _ = writeln!(stream, "{response}");
-        }
+    // Non-blocking so we never stall the main loop on a slow peer.
+    if stream.set_nonblocking(true).is_err() {
+        return;
     }
+    let fd = stream.as_raw_fd();
+
+    // Buffer for partial lines split across reads.
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+
+    glib::unix_fd_add_local(fd, glib::IOCondition::IN, move |_fd, _cond| {
+        // Drain whatever is available right now.
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => return glib::ControlFlow::Break, // EOF: peer closed
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > 1 << 20 {
+                        // Drop abusive/lost clients instead of unbounded growth.
+                        return glib::ControlFlow::Break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => return glib::ControlFlow::Break,
+            }
+        }
+
+        // Process every complete line currently buffered.
+        let mut consumed = 0;
+        while let Some(pos) = buf[consumed..].iter().position(|&b| b == b'\n') {
+            let end = consumed + pos;
+            let cmd = String::from_utf8_lossy(&buf[consumed..end]);
+            let response = handle_command(cmd.trim());
+            // Multi-line responses use length-prefix: "OK+<len>\n<data>"
+            if response.starts_with("OK+") {
+                let _ = write!(stream, "{response}");
+            } else {
+                let _ = writeln!(stream, "{response}");
+            }
+            consumed = end + 1;
+        }
+        buf.drain(..consumed);
+
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Parse a string into a typed value, returning early with an error string on failure.
@@ -123,6 +163,10 @@ fn handle_command(cmd: &str) -> String {
         // Workspace commands
         "new_workspace" | "new_tab" => {
             crate::window::new_workspace();
+            "OK".to_string()
+        }
+        "new_pane_tab" => {
+            crate::window::new_pane_tab();
             "OK".to_string()
         }
         "workspace_count" | "tab_count" => {
