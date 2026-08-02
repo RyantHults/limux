@@ -152,8 +152,12 @@ def test_new_pane_tab_inherits_working_directory():
     and readline's bracketed paste makes a pasted command inert. So this test
     launches its own instance with --command, and the command itself:
       1. prints the directory the shell was actually spawned in (PWDINIT:$PWD)
-      2. emits a fixed OSC-0 title pointing at `target`, which limux converts
-         into tab.working_directory (via SET_TITLE -> extract_directory)
+      2. re-emits a fixed OSC-0 title pointing at `target`, which limux
+         converts into tab.working_directory (via SET_TITLE ->
+         extract_directory). It is re-emitted in a loop because a single
+         emission can be dropped if it arrives before the app has registered
+         the surface/tab (slow software-GL boot on CI); a later emission then
+         lands and the wait below still succeeds.
       3. execs an interactive bash so the surface stays usable
     tab1's working_directory is seeded by its own startup title, and tab2's
     PWDINIT line reveals which directory it was spawned in.
@@ -170,7 +174,7 @@ def test_new_pane_tab_inherits_working_directory():
     sock_path = os.path.join(sock_dir, "limux.sock")
     command = (
         "printf 'PWDINIT:%%s\\n' \"$PWD\"; "
-        "printf '\\033]0;user@host:%s\\007'; "
+        "while :; do printf '\\033]0;user@host:%s\\007'; sleep 0.2; done & "
         "exec bash"
     ) % (target,)
 
