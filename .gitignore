@@ -39,3 +39,8 @@ tmp-*/
 
 # Build outputs (e.g. AppImage from scripts/build-appimage.sh)
 /dist/
+
+# BEGIN oh-my-opencode-slim worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END oh-my-opencode-slim worktrees
