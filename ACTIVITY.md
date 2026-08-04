@@ -133,3 +133,27 @@ AppImage's *bundled* librsvg 2.50 via `LD_LIBRARY_PATH` — API mismatch →
 warnings. With it: zero icon-loading warnings (only a pre-existing harmless
 host-side gvfs `undefined symbol` and the known `margin-start` theme warning).
 `bash -n` clean.
+
+## 2026-08-04 — Re-release v0.2.4 (tag move onto the icon fix)
+
+PR #9 (the `GDK_PIXBUF_MODULE_FILE` fix) merged as `bd7b7b1`. The broken
+v0.2.4 AppImage had never been distributed (release deleted, zero downloads),
+so instead of bumping to 0.2.5 we **moved the `v0.2.4` tag** to the merged
+commit and re-pushed it — keeping the tag's version (`0.2.4` in both
+`app/Cargo.toml` and the built AppImage) consistent with the tag name.
+
+- Moved: `git tag -f v0.2.4 origin/main`, `git push origin :refs/tags/v0.2.4`,
+  `git push origin refs/tags/v0.2.4`. The `push: tags: ["v*"]` trigger (PR #6)
+  fired on the re-push; no PR/main-push builds spawned.
+- Release workflow run `30934139422` (sha `bd7b7b1`) succeeded; the deleted
+  v0.2.4 GitHub release was re-created and `limux-0.2.4-x86_64.AppImage`
+  re-uploaded.
+- Published asset verified post-build: extracted `AppRun` exports
+  `GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"`;
+  the cache exists in the image and references the bundled
+  `libpixbufloader-svg.so`, which ships in `loaders/`.
+
+**Trade-off accepted:** two distinct builds now share the version "0.2.4"
+(broken `c01d444`, fixed `bd7b7b1`) — only acceptable because the broken one
+was never downloaded. For any distributed release, bumping the version is the
+correct path; moving a published tag is an anti-pattern.
