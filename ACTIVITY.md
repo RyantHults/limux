@@ -110,3 +110,26 @@ v0.2.3 image (`open_browser` → fatal abort). Replaying exactly the sentinel+en
 setup on the same image made `open_browser` succeed (1 browser surface, zero
 errors, app stays alive). `bash -n` clean on the rewritten script. MVP suite
 unaffected (AppImage-only change).
+
+## 2026-08-04 — Fix AppImage SVG icons (GDK_PIXBUF_MODULE_FILE)
+
+**Bug:** v0.2.4 AppImage showed the GTK "missing icon" placeholder for every
+symbolic icon (sidebar, tab close, browser buttons, etc.).
+
+**Root cause:** PR #8 switched AppImage sealing from linuxdeploy to
+appimagetool so the custom AppRun survives, but the custom AppRun dropped the
+`GDK_PIXBUF_MODULE_FILE` export that linuxdeploy's gtk-plugin hook had been
+adding. Without it, gdk-pixbuf loads the *host* loader cache (e.g. a librsvg
+2.6x `libpixbufloader_svg.so` from the system), which then dlopens against the
+AppImage's *bundled* librsvg 2.50 via `LD_LIBRARY_PATH` — API mismatch →
+`undefined symbol: rsvg_handle_get_pixbuf_and_error` → every SVG icon fails.
+
+- `scripts/build-appimage.sh` — custom AppRun now exports
+  `GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"`
+  (comment explains why), restoring the gtk-plugin hook's behavior.
+
+**Verification:** extracted v0.2.4, ran under Xvfb. Without the var: repeated
+`undefined symbol: rsvg_handle_get_pixbuf_and_error` + `Failed to load icon`
+warnings. With it: zero icon-loading warnings (only a pre-existing harmless
+host-side gvfs `undefined symbol` and the known `margin-start` theme warning).
+`bash -n` clean.
