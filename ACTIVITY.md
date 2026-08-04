@@ -157,3 +157,31 @@ commit and re-pushed it — keeping the tag's version (`0.2.4` in both
 (broken `c01d444`, fixed `bd7b7b1`) — only acceptable because the broken one
 was never downloaded. For any distributed release, bumping the version is the
 correct path; moving a published tag is an anti-pattern.
+
+## 2026-08-04 — Strip AppImage LD_LIBRARY_PATH from terminal shells
+
+**Bug:** running `git` in an AppImage-launched terminal printed
+`git: .../.cache/appimage-run/<hash>/usr/lib/libpcre2-8.so.0: no version
+information available` on every invocation.
+
+**Root cause:** the custom AppRun exports
+`LD_LIBRARY_PATH="$APPDIR/usr/lib:$APPDIR/lib:${LD_LIBRARY_PATH:-}"` so the app
+can load its bundled libs. That var is inherited by every shell the app
+spawns; children like git then resolve the AppImage's bundled libpcre2 against
+host binaries and the dynamic linker warns (bundled lib has no version
+symbols). The warning also breaks `nix develop` cargo links of glib (versioned
+`pcre2_*_8@PCRE2_10.47` refs go unresolved).
+
+**Fix:** `app/src/surface.rs` — terminal surfaces now pass an `env_vars`
+override (the FFI already exposed `env_var_count`; ghostty merges it into
+`config.env` → `Exec.zig` child env) that removes any `$APPDIR`-prefixed
+entries from `LD_LIBRARY_PATH`, preserving the user's own paths. Gated on
+`APPDIR` being set (AppImage only). The app process env is untouched, so
+WebKit subprocesses (spawned by this process) still find the bundled
+libwebkitgtk — browser panels unaffected.
+
+**Verification:** `cargo build` (clean `LD_LIBRARY_PATH` — the polluted var
+breaks linking). Under Xvfb with `APPDIR=/tmp/fake-appdir` and a polluted
+`LD_LIBRARY_PATH`, a `--command 'echo LDX=$LD_LIBRARY_PATH'` surface printed
+`LDX=/home/ryan/dev/limux/ghostty/zig-out/lib:/usr/lib` (AppImage paths gone).
+MVP suite 8/8.
