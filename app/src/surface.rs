@@ -99,6 +99,36 @@ pub fn create_with_id(
             .as_ref()
             .map_or(std::ptr::null(), |s| s.as_ptr());
 
+        // Strip $APPDIR library paths from LD_LIBRARY_PATH for terminal
+        // shells. The AppRun launcher (and setup_appimage_webkit) prepend
+        // the AppImage's bundled usr/lib so this process can load its own
+        // libs, but children then resolve the bundled libpcre2-8.so.0 and
+        // the dynamic linker warns "no version information available" on
+        // every git invocation. WebKit subprocesses are spawned by this
+        // process with the app's own env, so they are unaffected by this
+        // override. Only applies to AppImage builds (APPDIR set).
+        let mut env_vars: Vec<ghostty_env_var_s> = Vec::new();
+        let mut env_key: Option<CString> = None;
+        let mut env_value: Option<CString> = None;
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            let ld = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+            let cleaned = ld
+                .split(':')
+                .filter(|p| !p.is_empty() && !p.starts_with(&appdir))
+                .collect::<Vec<_>>()
+                .join(":");
+            if cleaned != ld {
+                env_key = Some(CString::new("LD_LIBRARY_PATH").expect("no NUL"));
+                env_value = Some(CString::new(cleaned).expect("no NUL"));
+                env_vars.push(ghostty_env_var_s {
+                    key: env_key.as_ref().unwrap().as_ptr(),
+                    value: env_value.as_ref().unwrap().as_ptr(),
+                });
+                cfg.env_vars = env_vars.as_mut_ptr();
+                cfg.env_var_count = env_vars.len();
+            }
+        }
+
         let surface = unsafe { ghostty_surface_new(crate::app::GhosttyApp::handle(), &cfg) };
         if surface.is_null() {
             unsafe { drop(Box::from_raw(id_ptr as *mut SurfaceId)) };
