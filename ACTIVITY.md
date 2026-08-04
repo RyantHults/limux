@@ -185,3 +185,15 @@ breaks linking). Under Xvfb with `APPDIR=/tmp/fake-appdir` and a polluted
 `LD_LIBRARY_PATH`, a `--command 'echo LDX=$LD_LIBRARY_PATH'` surface printed
 `LDX=/home/ryan/dev/limux/ghostty/zig-out/lib:/usr/lib` (AppImage paths gone).
 MVP suite 8/8.
+
+## 2026-08-04 — Release v0.2.5
+
+PR #10 (AppImage `LD_LIBRARY_PATH` strip) merged as `a20ed21`. Released as a
+proper version bump rather than a tag move — 0.2.4 is now widely distributed
+(since the re-release), so re-tagging it would be an anti-pattern.
+
+- `./scripts/release.sh 0.2.5` → commit `ddf4569` "Bump version to 0.2.5",
+  annotated tag `v0.2.5`, both pushed.
+- AppImage workflow run `30942046459` (sha `ddf4569`) succeeded;
+  `limux-0.2.5-x86_64.AppImage` published.
+- 0.2.5 carries the icon fix (0.2.4) plus the `LD_LIBRARY_PATH` strip.
