@@ -24,6 +24,12 @@ fi
 # not be honored.
 export LD_LIBRARY_PATH="$REPO_ROOT/ghostty/zig-out/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
+# WebKitGTK's bubblewrap sandbox fails on CI runners (netlink is restricted, so
+# the network process dies with "bwrap: loopback: Failed RTM_NEWADDR: Operation
+# not permitted" and the app aborts). Disable the sandbox for tests only —
+# this must never be set in the app itself (hence the env var's name).
+export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+
 if [[ ! -x "$LIMUX_BIN" ]]; then
   echo "error: limux binary not found or not executable at $LIMUX_BIN" >&2
   exit 1

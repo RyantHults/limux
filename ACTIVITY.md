@@ -228,3 +228,26 @@ the GtkPaned tree and unrealizes the still-closing terminal's GLArea →
 `ghostty_surface_display_unrealized` on a half-torn-down surface. The regression
 test therefore leaves its workspace open (it verifies normalization, not
 teardown) and documents the crash; the close-flow fix is tracked as follow-up.
+
+## 2026-08-05 — CI: WebKit sandbox fix for `test_open_browser_normalizes_url`
+
+**Problem:** PR #11's Rust CI check kept failing with a fatal WebKit error, not
+a test assertion failure. On the GitHub runner (ubuntu-24.04, xvfb), WebKitGTK's
+bubblewrap sandbox cannot configure loopback networking inside the restricted
+runner namespace — the network process dies with `bwrap: loopback: Failed
+RTM_NEWADDR: Operation not permitted`, then the UI process aborts on
+`Connection: failed to receive credentials`. Any page load that touches the
+network process (i.e. any real URL) is fatal in CI. Run 1 only "passed" the
+assertion because the URL committed before the network process died.
+
+**Fix:** `scripts/run-tests-linux.sh` now exports
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` before launching the app. Test
+harness only — the env var's name is exactly why it must never be set in the
+app itself.
+
+**Verification:** full MVP suite (9 tests) passes locally under Xvfb with a
+fresh `XDG_*` home to mimic the CI runner — including
+`test_open_browser_normalizes_url`, which previously only worked by luck. App
+stays alive throughout. Also confirmed session restore is enabled by default
+(`settings.rs`) — the stray workspaces seen in earlier manual probes were the
+app restoring stale state from previous runs' persisted sessions, not a bug.
