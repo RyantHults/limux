@@ -141,6 +141,33 @@ def _wait_until(predicate, timeout_s=15.0, interval_s=0.15):
     return False
 
 
+def test_open_browser_normalizes_url(cli):
+    """open_browser must convert a bare domain into a scheme'd URL.
+
+    Regression: the open_browser socket command passed its raw argument
+    straight to the WebView, so `open_browser example.com` never loaded
+    (navigate and the toolbar address bar already normalized).
+    """
+    cli.new_workspace()
+    ws_id, _ = cli.current_workspace()
+
+    resp = cli._send_line("open_browser example.com")
+    assert resp == "OK"
+
+    ok = _wait_until(
+        lambda: any(
+            s.get("workspace") == ws_id
+            and s.get("kind") == "browser"
+            and (s.get("url") or "").startswith("https://")
+            for s in cli.list_surfaces()
+        ),
+        timeout_s=20.0,
+    )
+    assert ok, "browser never loaded a normalized https:// URL"
+
+    cli.close_workspace(ws_id)
+
+
 def test_new_pane_tab_inherits_working_directory():
     """A new tab in a pane must start in the focused tab's working directory.
 

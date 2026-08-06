@@ -597,7 +597,7 @@ fn clear_proxy(session: *mut WebKitNetworkSession) {
 
 /// Normalize user input into a URL. If it looks like a URL, ensure it has
 /// a scheme. Otherwise, treat it as a search query.
-fn normalize_url(input: &str) -> String {
+pub(crate) fn normalize_url(input: &str) -> String {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return String::new();

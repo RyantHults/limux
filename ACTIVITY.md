@@ -197,3 +197,23 @@ proper version bump rather than a tag move — 0.2.4 is now widely distributed
 - AppImage workflow run `30942046459` (sha `ddf4569`) succeeded;
   `limux-0.2.5-x86_64.AppImage` published.
 - 0.2.5 carries the icon fix (0.2.4) plus the `LD_LIBRARY_PATH` strip.
+
+## 2026-08-05 — `open_browser` URL normalization fix
+
+**Bug:** the `open_browser` socket command passed its raw argument straight to
+the WebView, so `limux-cli open-browser google.com` handed `google.com` (no
+scheme) to `webkit_web_view_load_uri` and the page never loaded. `navigate`
+and the toolbar address bar already normalized; the open path never did.
+
+**Fix:** `app/src/window.rs` — `split_focused_browser` now calls
+`crate::browser::normalize_url()` (made `pub(crate)` in `app/src/browser.rs`)
+before creating the panel. Covers all three entry points at once: socket
+command, D-Bus `open_browser`, and the GUI menu action. Normalized URL also
+flows into the address bar text and the stored pane URL.
+
+**Verification:** `cargo build` clean. End-to-end socket probe under Xvfb:
+`open_browser example.com` → browser surface with `url=https://example.com/`
+committed. Regression test `test_open_browser_normalizes_url` added to
+`tests_v2/test_linux_mvp.py` (bare domain → `https://` URL assertion); the
+local uv pytest tool hangs on startup in this environment, so the probe was
+run with a stdlib-only client — the pytest case uses the same assertions.

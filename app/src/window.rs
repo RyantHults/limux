@@ -1283,6 +1283,7 @@ pub fn split_focused(orientation: Orientation) {
 
 /// Split the focused pane with a new browser pane.
 pub fn split_focused_browser(orientation: Orientation, url: &str) {
+    let url = crate::browser::normalize_url(url);
     with_app_window_mut(|aw| {
 
         let Some(page) = aw.notebook.current_page() else { return };
@@ -1295,12 +1296,12 @@ pub fn split_focused_browser(orientation: Orientation, url: &str) {
         // Create browser panel (with proxy if this is a remote workspace)
         let browser_id = browser::next_browser_id();
         let browser_widget = if let Some(ref ep) = aw.workspaces[ws_idx].proxy_endpoint {
-            browser::create_with_proxy(browser_id, url, ep)
+            browser::create_with_proxy(browser_id, &url, ep)
         } else {
-            browser::create(browser_id, url)
+            browser::create(browser_id, &url)
         };
 
-        let new_pane = Pane::new_browser_with_id(workspace::next_pane_id(), browser_id, url);
+        let new_pane = Pane::new_browser_with_id(workspace::next_pane_id(), browser_id, &url);
         let new_pane_id = new_pane.id;
         let pane_count_before = aw.workspaces[ws_idx].panes.len();
         aw.workspaces[ws_idx].add_pane(new_pane);
