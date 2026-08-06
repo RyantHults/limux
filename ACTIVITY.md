@@ -251,3 +251,25 @@ fresh `XDG_*` home to mimic the CI runner — including
 stays alive throughout. Also confirmed session restore is enabled by default
 (`settings.rs`) — the stray workspaces seen in earlier manual probes were the
 app restoring stale state from previous runs' persisted sessions, not a bug.
+
+## 2026-08-05 — New tab (new workspace) now inherits focused tab's working directory
+
+**Bug:** ghostty's "new tab" action (and the Ctrl+Shift+T "New Workspace" action,
+sidebar "+ New" button, and socket `new_tab`/`new_workspace`) always spawned the
+new terminal at the app-level default working directory (home) instead of the
+previously focused tab's folder. The pane-tab path (`new_pane_tab`, fixed in
+#7) and split path (`split_focused`) inherited correctly; `new_workspace()`
+never did.
+
+**Fix:** `app/src/window.rs` — `new_workspace()` now resolves the working
+directory the same way the other two paths do: from the current workspace's
+focused pane's active tab (`tab.working_directory`, seeded by OSC-0 titles via
+`extract_directory`), falling back to the app-level default (e.g. at startup,
+when no workspace exists yet).
+
+**Verification:** regression test `test_new_tab_inherits_working_directory`
+added to `tests_v2/test_linux_mvp.py` (mirrors the #7 pane-tab test: seeds the
+focused tab's cwd via OSC-0, sends `new_tab`, asserts the new terminal's
+`PWDINIT`). Confirmed it FAILS on the old code and PASSES on the fix; full MVP
+suite (10 tests) passes. Also added a `new_tab()` helper to the `limux.py` test
+client.

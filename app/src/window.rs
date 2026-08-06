@@ -698,10 +698,23 @@ pub(crate) fn pane_tab_count(pane_id: PaneId) -> usize {
 pub fn new_workspace() {
     with_app_window_mut(|aw| {
 
+        // Inherit working directory from the focused tab in the current
+        // workspace (falls back to the app-level default — e.g. at startup,
+        // when no workspace exists yet). This mirrors split_focused and
+        // new_pane_tab.
+        let wd = aw
+            .notebook
+            .current_page()
+            .and_then(|page| aw.workspaces.get(page as usize))
+            .and_then(|ws| ws.focused_pane().and_then(|pid| ws.panes.get(&pid)))
+            .and_then(|pane| pane.tabs.get(pane.selected_tab))
+            .and_then(|tab| tab.working_directory.clone())
+            .or_else(|| aw.working_directory.clone());
+
         // Pre-allocate the surface ID so the stack child name matches
         let surface_id = surfaces::pre_allocate_id();
         let (gl_area, _sid_cell) = surface::create_with_id(
-            aw.working_directory.as_deref(),
+            wd.as_deref(),
             aw.command.as_deref(),
             Some(surface_id),
         );
