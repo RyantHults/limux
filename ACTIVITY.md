@@ -197,3 +197,57 @@ proper version bump rather than a tag move — 0.2.4 is now widely distributed
 - AppImage workflow run `30942046459` (sha `ddf4569`) succeeded;
   `limux-0.2.5-x86_64.AppImage` published.
 - 0.2.5 carries the icon fix (0.2.4) plus the `LD_LIBRARY_PATH` strip.
+
+## 2026-08-05 — `open_browser` URL normalization fix
+
+**Bug:** the `open_browser` socket command passed its raw argument straight to
+the WebView, so `limux-cli open-browser google.com` handed `google.com` (no
+scheme) to `webkit_web_view_load_uri` and the page never loaded. `navigate`
+and the toolbar address bar already normalized; the open path never did.
+
+**Fix:** `app/src/window.rs` — `split_focused_browser` now calls
+`crate::browser::normalize_url()` (made `pub(crate)` in `app/src/browser.rs`)
+before creating the panel. Covers all three entry points at once: socket
+command, D-Bus `open_browser`, and the GUI menu action. Normalized URL also
+flows into the address bar text and the stored pane URL.
+
+**Verification:** `cargo build` clean. End-to-end socket probe under Xvfb:
+`open_browser example.com` → browser surface with `url=https://example.com/`
+committed. Regression test `test_open_browser_normalizes_url` added to
+`tests_v2/test_linux_mvp.py` (bare domain → `https://` URL assertion); the
+local uv pytest tool hangs on startup in this environment, so the probe was
+run with a stdlib-only client — the pytest case uses the same assertions.
+
+**Found while running CI (pre-existing, not caused by this change):** closing a
+workspace that contains a browser panel alongside a terminal SIGSEGVs inside
+libghostty (deterministic under Xvfb; reproducible with full-scheme URLs where
+normalization is a no-op). Mechanism: terminals close asynchronously
+(SIGHUP → ghostty close callback → workspace removal), but a browser closes
+synchronously via `close_browser` → `remove_pane_from_split`, which collapses
+the GtkPaned tree and unrealizes the still-closing terminal's GLArea →
+`ghostty_surface_display_unrealized` on a half-torn-down surface. The regression
+test therefore leaves its workspace open (it verifies normalization, not
+teardown) and documents the crash; the close-flow fix is tracked as follow-up.
+
+## 2026-08-05 — CI: WebKit sandbox fix for `test_open_browser_normalizes_url`
+
+**Problem:** PR #11's Rust CI check kept failing with a fatal WebKit error, not
+a test assertion failure. On the GitHub runner (ubuntu-24.04, xvfb), WebKitGTK's
+bubblewrap sandbox cannot configure loopback networking inside the restricted
+runner namespace — the network process dies with `bwrap: loopback: Failed
+RTM_NEWADDR: Operation not permitted`, then the UI process aborts on
+`Connection: failed to receive credentials`. Any page load that touches the
+network process (i.e. any real URL) is fatal in CI. Run 1 only "passed" the
+assertion because the URL committed before the network process died.
+
+**Fix:** `scripts/run-tests-linux.sh` now exports
+`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` before launching the app. Test
+harness only — the env var's name is exactly why it must never be set in the
+app itself.
+
+**Verification:** full MVP suite (9 tests) passes locally under Xvfb with a
+fresh `XDG_*` home to mimic the CI runner — including
+`test_open_browser_normalizes_url`, which previously only worked by luck. App
+stays alive throughout. Also confirmed session restore is enabled by default
+(`settings.rs`) — the stray workspaces seen in earlier manual probes were the
+app restoring stale state from previous runs' persisted sessions, not a bug.
