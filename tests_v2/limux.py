@@ -134,6 +134,10 @@ class limux:
     def new_workspace(self) -> None:
         self._expect_ok(self._send_line("new_workspace"))
 
+    def new_tab(self) -> None:
+        """Ghostty-style new tab; aliases new_workspace on the socket."""
+        self._expect_ok(self._send_line("new_tab"))
+
     def new_pane_tab(self) -> None:
         self._expect_ok(self._send_line("new_pane_tab"))
 

@@ -290,3 +290,121 @@ def test_new_pane_tab_inherits_working_directory():
             proc.wait()
         shutil.rmtree(sock_dir, ignore_errors=True)
 
+
+def test_new_tab_inherits_working_directory():
+    """A new tab (new_workspace) must start in the focused tab's directory.
+
+    Regression test for the bug where new_workspace() always spawned the new
+    terminal at the app-level default working directory (typically the home
+    folder) instead of the directory of the previously focused tab. The
+    pane-tab path (new_pane_tab) inherited correctly; the new-tab/new-workspace
+    path never did.
+
+    Same technique as test_new_pane_tab_inherits_working_directory: the
+    --command seeds the focused tab's working_directory with `target` via OSC-0
+    titles, then the new tab's PWDINIT line reveals where it was actually
+    spawned.
+    """
+    target = "/tmp/limux-cwd-inherit-tab"
+    os.makedirs(target, exist_ok=True)
+    bin_path = os.environ.get("LIMUX_BIN") or str(
+        Path(__file__).resolve().parents[1] / "target/debug/limux"
+    )
+    if not os.path.exists(bin_path):
+        pytest.skip(f"limux binary not found at {bin_path}")
+
+    sock_dir = tempfile.mkdtemp(prefix="limux-cwd-tab-test-")
+    sock_path = os.path.join(sock_dir, "limux.sock")
+    command = (
+        "printf 'PWDINIT:%%s\\n' \"$PWD\"; "
+        "while :; do printf '\\033]0;user@host:%s\\007'; sleep 0.2; done & "
+        "exec bash"
+    ) % (target,)
+
+    cmd = [bin_path, "--socket", sock_path, "--command", command]
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        if not shutil.which("xvfb-run"):
+            pytest.skip("no DISPLAY and xvfb-run unavailable")
+        cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x800x24"] + cmd
+
+    proc = subprocess.Popen(
+        cmd,
+        start_new_session=True,
+    )
+    try:
+        def socket_ready():
+            if os.path.exists(sock_path):
+                return True
+            if proc.poll() is not None:
+                raise AssertionError(
+                    f"limux exited early (rc={proc.returncode})"
+                )
+            return False
+
+        assert _wait_until(socket_ready, timeout_s=30), "socket never appeared"
+
+        with limux(socket_path=sock_path) as cli:
+            initial_ws, _ = cli.current_workspace()
+
+            def terminals():
+                return [
+                    s for s in cli.list_surfaces()
+                    if s.get("kind") == "terminal"
+                ]
+
+            assert _wait_until(lambda: len(terminals()) >= 1)
+            tab1_id = terminals()[0]["id"]
+
+            # Wait until the focused tab's working directory has been seeded
+            # with `target` (which differs from the app default).
+            ok = _wait_until(
+                lambda: any(s.get("cwd") == target for s in terminals()),
+                timeout_s=8.0,
+            )
+            assert ok, "tab1 never picked up cwd=%s" % target
+
+            cli.new_tab()
+
+            def new_ws_terminals():
+                new_ws, _ = cli.current_workspace()
+                if new_ws == initial_ws:
+                    return []
+                return [
+                    s for s in terminals() if s.get("workspace") == new_ws
+                ]
+
+            assert _wait_until(lambda: len(new_ws_terminals()) == 1)
+            new_id = new_ws_terminals()[0]["id"]
+            assert new_id != tab1_id, "new tab reused the old surface id"
+
+            def spawned_dir():
+                try:
+                    screen = cli.read_screen(new_id)
+                except limuxError:
+                    return None
+                for line in screen.splitlines():
+                    if line.startswith("PWDINIT:"):
+                        return line[len("PWDINIT:"):]
+                return None
+
+            assert _wait_until(lambda: spawned_dir() is not None), (
+                "no PWDINIT marker on new tab screen"
+            )
+            assert spawned_dir() == target, (
+                f"new tab was spawned in {spawned_dir()!r}, expected {target!r}"
+            )
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
