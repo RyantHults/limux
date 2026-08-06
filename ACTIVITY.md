@@ -217,3 +217,14 @@ committed. Regression test `test_open_browser_normalizes_url` added to
 `tests_v2/test_linux_mvp.py` (bare domain → `https://` URL assertion); the
 local uv pytest tool hangs on startup in this environment, so the probe was
 run with a stdlib-only client — the pytest case uses the same assertions.
+
+**Found while running CI (pre-existing, not caused by this change):** closing a
+workspace that contains a browser panel alongside a terminal SIGSEGVs inside
+libghostty (deterministic under Xvfb; reproducible with full-scheme URLs where
+normalization is a no-op). Mechanism: terminals close asynchronously
+(SIGHUP → ghostty close callback → workspace removal), but a browser closes
+synchronously via `close_browser` → `remove_pane_from_split`, which collapses
+the GtkPaned tree and unrealizes the still-closing terminal's GLArea →
+`ghostty_surface_display_unrealized` on a half-torn-down surface. The regression
+test therefore leaves its workspace open (it verifies normalization, not
+teardown) and documents the crash; the close-flow fix is tracked as follow-up.
