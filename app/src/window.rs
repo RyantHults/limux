@@ -1303,91 +1303,164 @@ pub fn split_focused_browser(orientation: Orientation, url: &str) {
         let ws_idx = page as usize;
         if ws_idx >= aw.workspaces.len() { return; }
 
-        let ws_id = aw.workspaces[ws_idx].id;
         let Some(focused_pane_id) = aw.workspaces[ws_idx].focused_pane() else { return };
 
-        // Create browser panel (with proxy if this is a remote workspace)
-        let browser_id = browser::next_browser_id();
-        let browser_widget = if let Some(ref ep) = aw.workspaces[ws_idx].proxy_endpoint {
-            browser::create_with_proxy(browser_id, &url, ep)
-        } else {
-            browser::create(browser_id, &url)
+        let browser_id =
+            split_browser_in_workspace(aw, ws_idx, focused_pane_id, orientation, None, &url);
+
+        if let Some(bid) = browser_id {
+            // Focus the address bar so the user can type a URL
+            glib::idle_add_local_once(move || {
+                browser::focus_address_bar(bid);
+            });
+        }
+    });
+}
+
+/// Open a new browser panel for a `window.open()` popup initiated by the
+/// given browser panel, returning the new WebKitWebView widget (or None if
+/// the panel could not be created). The popup opens in the workspace that
+/// hosts the opener, splitting from the pane that contains it. WebKit loads
+/// the popup's target URI into the returned view itself.
+///
+/// The returned view MUST be *related* to the opener's webview (created with
+/// the construct-only `WebKitWebView:related-view` property set to the opener);
+/// otherwise WebKitGTK's `webkitWebViewCreateNewPage()` dereferences a
+/// disengaged `std::optional<WebCore::WindowFeatures>` and aborts the process.
+pub fn open_browser_popup(
+    opener_browser_id: browser::BrowserPanelId,
+    url: &str,
+) -> Option<gtk4::Widget> {
+    with_app_window_mut(|aw| {
+        let Some(opener_webview) = browser::webview_ptr(opener_browser_id) else {
+            eprintln!("[popup] opener browser {opener_browser_id} not found in registry");
+            return None;
         };
 
-        let new_pane = Pane::new_browser_with_id(workspace::next_pane_id(), browser_id, &url);
-        let new_pane_id = new_pane.id;
-        let pane_count_before = aw.workspaces[ws_idx].panes.len();
-        aw.workspaces[ws_idx].add_pane(new_pane);
-
-        let new_pane_widget = build_browser_pane_widget(&browser_widget, browser_id);
-
-        let dp = aw.workspace_widgets.get(&ws_id).map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()));
-        if let (Some(pane), Some((dp_w, dp_r))) = (aw.workspaces[ws_idx].panes.get(&new_pane_id), dp.as_ref()) {
-            refresh_pane_tab_strip(&new_pane_widget, pane, dp_w, dp_r);
+        let (ws_idx, from_pane) = match aw.find_workspace_with_browser(opener_browser_id) {
+            Some((ws_idx, _ws_id, pane_id)) => (ws_idx, pane_id),
+            None => {
+                eprintln!("[popup] opener browser {opener_browser_id} not in a workspace, fallback to focused");
+                let page = aw.notebook.current_page().unwrap_or(0) as usize;
+                if page >= aw.workspaces.len() {
+                    return None;
+                }
+                let Some(from_pane) = aw.workspaces[page].focused_pane() else {
+                    return None;
+                };
+                (page, from_pane)
+            }
+        };
+        if ws_idx >= aw.workspaces.len() {
+            return None;
         }
+        let browser_id = split_browser_in_workspace(
+            aw,
+            ws_idx,
+            from_pane,
+            Orientation::Horizontal,
+            Some(opener_webview),
+            url,
+        )?;
+        browser::get_widget(browser_id)
+    })
+}
 
-        let gtk_orient: gtk4::Orientation = orientation.into();
+/// Create a browser panel in `ws_idx`, splitting `from_pane_id` aside, and
+/// return the new browser panel's ID.
+///
+/// When `related_opener` is `Some`, the new panel's webview is created as
+/// *related* to that opener (the `window.open()` popup path). Otherwise the
+/// panel is a normal browser (with proxy if this is a remote workspace).
+fn split_browser_in_workspace(
+    aw: &mut AppWindow,
+    ws_idx: usize,
+    from_pane_id: PaneId,
+    orientation: Orientation,
+    related_opener: Option<*mut libc::c_void>,
+    url: &str,
+) -> Option<browser::BrowserPanelId> {
+    let ws_id = aw.workspaces[ws_idx].id;
 
-        let split_node_id = aw.workspaces[ws_idx].split_tree.split(
-            focused_pane_id, new_pane_id, orientation,
-        );
+    // Create browser panel. The popup path must use the related constructor.
+    let browser_id = browser::next_browser_id();
+    let browser_widget = if let Some(opener) = related_opener {
+        browser::create_related(browser_id, opener, url)
+    } else if let Some(ref ep) = aw.workspaces[ws_idx].proxy_endpoint {
+        browser::create_with_proxy(browser_id, url, ep)
+    } else {
+        browser::create(browser_id, url)
+    };
 
-        if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
-            if pane_count_before == 1 {
-                widgets.root_paned.set_orientation(gtk_orient);
-                widgets.root_paned.set_end_child(Some(&new_pane_widget.container));
+    let new_pane = Pane::new_browser_with_id(workspace::next_pane_id(), browser_id, url);
+    let new_pane_id = new_pane.id;
+    let pane_count_before = aw.workspaces[ws_idx].panes.len();
+    aw.workspaces[ws_idx].add_pane(new_pane);
 
-                if let Some(nid) = split_node_id {
-                    widgets.split_paneds.insert(nid, widgets.root_paned.clone());
-                    connect_paned_ratio_sync(&widgets.root_paned, ws_id, nid);
-                }
+    let new_pane_widget = build_browser_pane_widget(&browser_widget, browser_id);
 
-                set_paned_position_after_layout(&widgets.root_paned, 0.5);
-            } else if let Some(focused_pw) = widgets.pane_widgets.get(&focused_pane_id) {
-                let container = focused_pw.container.clone();
-                let container_widget = container.upcast_ref::<gtk4::Widget>();
-                let parent = container_widget.parent()
-                    .and_then(|p| p.downcast::<gtk4::Paned>().ok());
+    let dp = aw.workspace_widgets.get(&ws_id).map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()));
+    if let (Some(pane), Some((dp_w, dp_r))) = (aw.workspaces[ws_idx].panes.get(&new_pane_id), dp.as_ref()) {
+        refresh_pane_tab_strip(&new_pane_widget, pane, dp_w, dp_r);
+    }
 
-                if let Some(parent_paned) = parent {
-                    let is_start = parent_paned.start_child()
-                        .map_or(false, |c| c == *container_widget);
+    let gtk_orient: gtk4::Orientation = orientation.into();
 
-                    let new_paned = gtk4::Paned::new(gtk_orient);
-                    configure_split_paned(&new_paned);
+    let split_node_id = aw.workspaces[ws_idx].split_tree.split(
+        from_pane_id, new_pane_id, orientation,
+    );
 
-                    if is_start {
-                        parent_paned.set_start_child(gtk4::Widget::NONE);
-                        new_paned.set_start_child(Some(container_widget));
-                        new_paned.set_end_child(Some(&new_pane_widget.container));
-                        parent_paned.set_start_child(Some(&new_paned));
-                    } else {
-                        parent_paned.set_end_child(gtk4::Widget::NONE);
-                        new_paned.set_start_child(Some(container_widget));
-                        new_paned.set_end_child(Some(&new_pane_widget.container));
-                        parent_paned.set_end_child(Some(&new_paned));
-                    }
+    if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
+        if pane_count_before == 1 {
+            widgets.root_paned.set_orientation(gtk_orient);
+            widgets.root_paned.set_end_child(Some(&new_pane_widget.container));
 
-                    if let Some(nid) = split_node_id {
-                        widgets.split_paneds.insert(nid, new_paned.clone());
-                        connect_paned_ratio_sync(&new_paned, ws_id, nid);
-                    }
-
-                    set_paned_position_after_layout(&new_paned, 0.5);
-                }
+            if let Some(nid) = split_node_id {
+                widgets.split_paneds.insert(nid, widgets.root_paned.clone());
+                connect_paned_ratio_sync(&widgets.root_paned, ws_id, nid);
             }
 
-            widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
+            set_paned_position_after_layout(&widgets.root_paned, 0.5);
+        } else if let Some(focused_pw) = widgets.pane_widgets.get(&from_pane_id) {
+            let container = focused_pw.container.clone();
+            let container_widget = container.upcast_ref::<gtk4::Widget>();
+            let parent = container_widget.parent()
+                .and_then(|p| p.downcast::<gtk4::Paned>().ok());
+
+            if let Some(parent_paned) = parent {
+                let is_start = parent_paned.start_child()
+                    .map_or(false, |c| c == *container_widget);
+
+                let new_paned = gtk4::Paned::new(gtk_orient);
+                configure_split_paned(&new_paned);
+
+                if is_start {
+                    parent_paned.set_start_child(gtk4::Widget::NONE);
+                    new_paned.set_start_child(Some(container_widget));
+                    new_paned.set_end_child(Some(&new_pane_widget.container));
+                    parent_paned.set_start_child(Some(&new_paned));
+                } else {
+                    parent_paned.set_end_child(gtk4::Widget::NONE);
+                    new_paned.set_start_child(Some(container_widget));
+                    new_paned.set_end_child(Some(&new_pane_widget.container));
+                    parent_paned.set_end_child(Some(&new_paned));
+                }
+
+                if let Some(nid) = split_node_id {
+                    widgets.split_paneds.insert(nid, new_paned.clone());
+                    connect_paned_ratio_sync(&new_paned, ws_id, nid);
+                }
+
+                set_paned_position_after_layout(&new_paned, 0.5);
+            }
         }
 
-        set_pane_active(aw, ws_idx, new_pane_id);
+        widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
+    }
 
-        // Focus the address bar so the user can type a URL
-        let bid = browser_id;
-        glib::idle_add_local_once(move || {
-            browser::focus_address_bar(bid);
-        });
-    });
+    set_pane_active(aw, ws_idx, new_pane_id);
+
+    Some(browser_id)
 }
 
 /// Called from browser.rs when a WebKitWebView's title changes.

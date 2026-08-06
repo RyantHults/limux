@@ -22,6 +22,12 @@ type WebKitFindController = libc::c_void;
 type WebKitNetworkSession = libc::c_void;
 #[allow(non_camel_case_types)]
 type WebKitNetworkProxySettings = libc::c_void;
+#[allow(non_camel_case_types)]
+type WebKitNavigationAction = libc::c_void;
+#[allow(non_camel_case_types)]
+type WebKitURIRequest = libc::c_void;
+#[allow(non_camel_case_types)]
+type WebKitSettings = libc::c_void;
 
 // Proxy mode enum values for webkit_network_session_set_proxy_settings
 #[allow(dead_code)]
@@ -45,6 +51,19 @@ unsafe extern "C" {
     fn webkit_web_view_can_go_back(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
     fn webkit_web_view_can_go_forward(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
     fn webkit_web_view_is_loading(web_view: *mut WebKitWebView) -> glib::ffi::gboolean;
+
+    // Popup window support (window.open)
+    fn webkit_navigation_action_get_request(
+        navigation_action: *mut WebKitNavigationAction,
+    ) -> *mut WebKitURIRequest;
+    fn webkit_uri_request_get_uri(request: *mut WebKitURIRequest) -> *const libc::c_char;
+
+    // WebKit settings (popups)
+    fn webkit_web_view_get_settings(web_view: *mut WebKitWebView) -> *mut WebKitSettings;
+    fn webkit_settings_set_javascript_can_open_windows_automatically(
+        settings: *mut WebKitSettings,
+        allowed: glib::ffi::gboolean,
+    );
 
     // FindController
     fn webkit_web_view_get_find_controller(
@@ -141,7 +160,7 @@ fn icon_button(icon: &str, tooltip: &str) -> gtk4::Button {
 ///   - Toolbar: back, forward, reload buttons + address bar
 ///   - WebKitWebView filling the remaining space
 pub fn create(id: BrowserPanelId, initial_url: &str) -> gtk4::Box {
-    create_inner(id, initial_url, None)
+    create_inner(id, initial_url, None, None)
 }
 
 /// Create a browser panel with a SOCKS5 proxy pre-configured for remote browsing.
@@ -150,13 +169,35 @@ pub fn create_with_proxy(
     initial_url: &str,
     endpoint: &crate::remote::ProxyEndpoint,
 ) -> gtk4::Box {
-    create_inner(id, initial_url, Some(endpoint))
+    create_inner(id, initial_url, Some(endpoint), None)
 }
 
+/// Create a browser panel whose WebKitWebView is *related* to an opener's
+/// webview (used for `window.open()` popups).
+///
+/// WebKitGTK's "create" signal contract requires the returned view to be
+/// related to the opener (see the construct-only `WebKitWebView:related-view`
+/// property). The related view is created with
+/// `g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", opener, NULL)`;
+/// there is no `webkit_web_view_new_with_related_view()` function in
+/// WebKitGTK 6.0. Returning a plain `webkit_web_view_new()` webview makes
+/// `webkitWebViewCreateNewPage()` unconditionally dereference a disengaged
+/// `std::optional<WebCore::WindowFeatures>` and abort the process
+/// (libwebkitgtk <= 2.52.5, introduced upstream in 2.48).
+pub fn create_related(
+    id: BrowserPanelId,
+    opener_webview_ptr: *mut WebKitWebView,
+    initial_url: &str,
+) -> gtk4::Box {
+    create_inner(id, initial_url, None, Some(opener_webview_ptr))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn create_inner(
     id: BrowserPanelId,
     initial_url: &str,
     proxy: Option<&crate::remote::ProxyEndpoint>,
+    related_opener: Option<*mut WebKitWebView>,
 ) -> gtk4::Box {
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     container.add_css_class("browser-panel");
@@ -243,6 +284,22 @@ fn create_inner(
                 std::ptr::null::<libc::c_char>(),
             ) as *mut gtk4::ffi::GtkWidget
         }
+    } else if let Some(opener) = related_opener {
+        // Popup created from window.open(): the view returned from the
+        // "create" signal handler MUST be related to the opener — WebKitGTK
+        // reads the opener's window features from the related view and aborts
+        // on a disengaged std::optional<WindowFeatures> otherwise. There is
+        // no webkit_web_view_new_with_related_view() in WebKitGTK 6.0, so set
+        // the construct-only "related-view" property via g_object_new.
+        unsafe {
+            let prop_name = CString::new("related-view").unwrap();
+            glib::gobject_ffi::g_object_new(
+                webkit_web_view_get_type(),
+                prop_name.as_ptr(),
+                opener,
+                std::ptr::null::<libc::c_char>(),
+            ) as *mut gtk4::ffi::GtkWidget
+        }
     } else {
         unsafe { webkit_web_view_new() }
     };
@@ -253,6 +310,15 @@ fn create_inner(
     webview_widget.set_vexpand(true);
     webview_widget.set_hexpand(true);
     webview_widget.set_focusable(true);
+
+    // Allow pages to open popup windows. Some login flows (OAuth providers)
+    // call window.open() without a fresh user gesture, so don't require one.
+    unsafe {
+        let settings = webkit_web_view_get_settings(webview_ptr as *mut WebKitWebView);
+        if !settings.is_null() {
+            webkit_settings_set_javascript_can_open_windows_automatically(settings, 1);
+        }
+    }
     container.append(&webview_widget);
 
     // Load initial URL
@@ -434,6 +500,70 @@ fn create_inner(
         });
     });
 
+    // ── Popup windows: window.open() opens a new browser panel ─────
+    // WebKitGTK emits "create" when page JS calls window.open(). We open a
+    // new browser panel in the workspace hosting the opener and hand the
+    // resulting WebKitWebView back to WebKit, which loads the target URI.
+    // The returned view MUST be related to the opener (see create_related);
+    // open_browser_popup guarantees that by using the related constructor.
+    let popup_wv: glib::Object = webview_widget.clone().upcast();
+    popup_wv.connect_local("create", false, move |args| {
+        // args[0] is the WebKitWebView instance (the opener webview).
+        let Some(opener_value) = args.get(0) else {
+            eprintln!("[popup] create fired with no args");
+            return None;
+        };
+        let opener_obj: glib::Object = match opener_value.get() {
+            Ok(o) => o,
+            Err(_) => {
+                eprintln!("[popup] create fired with a non-object arg[0]");
+                return None;
+            }
+        };
+        let opener_ptr = opener_obj.as_ptr() as *mut WebKitWebView;
+
+        // The URL is only used for logging — WebKit loads the popup's target
+        // URI into the returned view itself.
+        let url = args
+            .get(1)
+            .and_then(|v| v.get::<glib::Object>().ok())
+            .and_then(|nav| {
+                let action_ptr = nav.as_ptr() as *mut WebKitNavigationAction;
+                let req = unsafe { webkit_navigation_action_get_request(action_ptr) };
+                if req.is_null() {
+                    return None;
+                }
+                unsafe { crate::util::cstr_to_string(webkit_uri_request_get_uri(req)) }
+            })
+            .unwrap_or_default();
+
+        eprintln!("[popup] create fired url={url:?}");
+
+        let Some(opener_browser_id) = crate::browser::find_id_by_webview_ptr(opener_ptr) else {
+            eprintln!("[popup] create: opener webview not in registry; returning None");
+            return None;
+        };
+
+        match crate::window::open_browser_popup(opener_browser_id, "") {
+            Some(widget) => {
+                eprintln!("[popup] returned related webview");
+                Some(widget.to_value())
+            }
+            None => {
+                eprintln!("[popup] open_browser_popup failed; returning None");
+                None
+            }
+        }
+    });
+
+    // ── Close popups when the page calls window.close() ────────────
+    let close_id = id;
+    let close_wv: glib::Object = webview_widget.clone().upcast();
+    close_wv.connect_local("close", false, move |_| {
+        crate::window::close_browser(close_id);
+        None
+    });
+
     // Store browser ID on the container for lookup
     unsafe { container.set_data("browser-panel-id", id) };
 
@@ -541,6 +671,23 @@ pub fn unregister(id: BrowserPanelId) {
 /// Get the WebView widget for a browser panel (for embedding in GtkStack).
 pub fn get_widget(id: BrowserPanelId) -> Option<gtk4::Widget> {
     with_browser(id, |e| e.widget.clone())
+}
+
+/// Get the raw WebKitWebView pointer for a browser panel by ID.
+pub fn webview_ptr(id: BrowserPanelId) -> Option<*mut WebKitWebView> {
+    with_browser(id, |e| e.webview_ptr)
+}
+
+/// Find the browser panel whose WebView matches the given raw pointer.
+/// Used by the "create" signal handler to map a `window.open()` opener
+/// (the WebKitWebView instance passed as arg[0]) back to its browser ID.
+pub fn find_id_by_webview_ptr(ptr: *mut WebKitWebView) -> Option<BrowserPanelId> {
+    BROWSERS.with(|b| {
+        b.borrow()
+            .iter()
+            .find(|(_, entry)| entry.webview_ptr == ptr)
+            .map(|(id, _)| *id)
+    })
 }
 
 /// Update the network proxy for an existing browser panel.
