@@ -183,7 +183,16 @@ fn append_integrate_section(parent: &gtk4::Box) {
         sw.set_active(true);
         sw.set_sensitive(false);
         parent.append(&form_row("Desktop integration", &sw));
-        let sub = gtk4::Label::new(Some("limux is already integrated with your desktop."));
+        let installed = install::installed_version();
+        let current = env!("CARGO_PKG_VERSION");
+        let status = match &installed {
+            Some(v) if v != current => {
+                format!("Integrated as v{} — running v{}", v, current)
+            }
+            Some(v) => format!("Integrated as v{}", v),
+            None => "limux is already integrated with your desktop.".to_string(),
+        };
+        let sub = gtk4::Label::new(Some(&status));
         sub.set_xalign(0.0);
         sub.add_css_class("dim-label");
         parent.append(&sub);
@@ -208,8 +217,10 @@ fn append_integrate_section(parent: &gtk4::Box) {
                     sw.set_active(true);
                     sw.set_sensitive(false);
                     parent.append(&form_row("Desktop integration", &sw));
-                    let new_sub =
-                        gtk4::Label::new(Some("limux is already integrated with your desktop."));
+                    let new_sub = gtk4::Label::new(Some(&format!(
+                        "Integrated as v{}",
+                        env!("CARGO_PKG_VERSION")
+                    )));
                     new_sub.set_xalign(0.0);
                     new_sub.add_css_class("dim-label");
                     parent.append(&new_sub);

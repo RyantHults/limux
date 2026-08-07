@@ -21,6 +21,9 @@ pub fn appimage_path() -> Option<PathBuf> {
 
 /// True if desktop integration has already been performed — i.e. the
 /// `.desktop` file is present in `~/.local/share/applications/`.
+///
+/// This is an existence check only; use [`installed_version`] /
+/// [`is_version_stale`] to detect when the installed file is out of date.
 pub fn is_integrated() -> bool {
     if let Some(desktop_dir) = xdg_dir("XDG_DATA_HOME", ".local/share") {
         let desktop = desktop_dir.join("applications").join("limux.desktop");
@@ -29,6 +32,39 @@ pub fn is_integrated() -> bool {
         }
     }
     false
+}
+
+/// Version stamped into the installed `.desktop` file via
+/// `X-AppImage-Version=`, if any. Returns `None` if the file is missing,
+/// unreadable, or doesn't carry that key.
+pub fn installed_version() -> Option<String> {
+    let desktop_dir = xdg_dir("XDG_DATA_HOME", ".local/share")?;
+    let desktop = desktop_dir.join("applications").join("limux.desktop");
+    let content = std::fs::read_to_string(desktop).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("X-AppImage-Version=") {
+            let v = rest.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// True iff running from an AppImage and the installed `.desktop` file's
+/// version differs from the running binary's version. `false` when not an
+/// AppImage, or when no `.desktop` file is installed yet (the first-run
+/// prompt handles that case).
+pub fn is_version_stale() -> bool {
+    if !is_appimage() {
+        return false;
+    }
+    match installed_version() {
+        Some(installed) => installed != env!("CARGO_PKG_VERSION"),
+        None => false,
+    }
 }
 
 /// Spawn the AppImage with `--install` and wait for it. Returns Ok if the
