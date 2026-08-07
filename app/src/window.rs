@@ -2987,6 +2987,33 @@ pub fn set_focused_surface(surface_id: crate::split::SurfaceId) {
     });
 }
 
+/// Update the focused pane when a browser WebView gains focus.
+pub fn set_focused_browser(browser_id: crate::browser::BrowserPanelId) {
+    with_app_window_mut(|aw| {
+
+        // Find which workspace/pane owns this browser
+        let Some((ws_idx, ws_id, pane_id)) = aw.find_workspace_with_browser(browser_id) else { return };
+
+        // Clear bell if set
+        let clear_bell = aw.workspaces[ws_idx].panes.get(&pane_id)
+            .map(|p| p.has_bell).unwrap_or(false);
+        if clear_bell {
+            if let Some(pane) = aw.workspaces[ws_idx].panes.get_mut(&pane_id) {
+                pane.has_bell = false;
+            }
+        }
+
+        set_pane_active(aw, ws_idx, pane_id);
+        if clear_bell {
+            if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
+                if let Some(pw) = widgets.pane_widgets.get(&pane_id) {
+                    pw.container.remove_css_class("pane-bell");
+                }
+            }
+        }
+    });
+}
+
 /// Get the number of workspaces (backwards-compatible with tab_count).
 pub fn tab_count() -> usize {
     with_app_window(|aw| aw.workspaces.len())
@@ -3765,6 +3792,22 @@ fn restore_workspace_from_layout(ws_snap: &crate::session::WorkspaceSnapshot) {
 
 /// Recursively build a GTK widget tree from a LayoutSnapshot.
 /// Returns the top-level widget and the SplitTree representing the layout.
+///
+/// Restore example (regression for "tabs split into a new workspace", bug #3):
+///
+/// ```text
+/// // saved session.json layout:
+/// //   Single { tabs: [ {panel_kind: "browser", url: "https://example.com"},
+/// //                     {panel_kind: "terminal"} ] }
+/// // restored state:
+/// //   one pane (pane_id = P) in the split tree — NOT a new workspace
+/// //   ws.panes[P].tabs.len()                  == 2
+/// //   ws.panes[P].tabs[0]                     == Browser { browser_id: B }
+/// //   ws.panes[P].tabs[1]                     == Terminal { surface_id: S }
+/// //   pane_widgets[P].stack.children          == ["browser-B", "surface-S"]
+/// //   pane_widgets[P].stack.visible_child_name() == "browser-B" (first tab)
+/// //   ws.panes[P].selected_tab                == 0
+/// ```
 fn build_layout_widget(
     layout: &crate::session::LayoutSnapshot,
     ws: &mut Workspace,
@@ -3779,21 +3822,17 @@ fn build_layout_widget(
 ) -> (gtk4::Widget, SplitTree) {
     match layout {
         crate::session::LayoutSnapshot::Single { tabs } => {
-            // Check if this is a browser pane
-            let is_browser = tabs.first().map_or(false, |t| t.is_browser());
-
-            if is_browser {
-                let url = tabs.first()
-                    .and_then(|t| t.url.as_deref())
-                    .unwrap_or("");
-                let browser_id = browser::next_browser_id();
-                let browser_widget = browser::create(browser_id, url);
+            // A saved pane with no tabs (shouldn't happen) restores as a
+            // fresh default terminal so we never construct an empty stack.
+            if tabs.is_empty() {
+                let surface_id = surfaces::pre_allocate_id();
+                let (gl_area, _) = surface::create_with_id(default_wd, command, Some(surface_id));
+                pending_ids.push(surface_id);
 
                 let pane_id = workspace::next_pane_id();
-                let pane = Pane::new_browser_with_id(pane_id, browser_id, url);
-                ws.add_pane(pane);
+                ws.add_pane(Pane::new_with_id(pane_id, surface_id));
 
-                let pw = build_browser_pane_widget(&browser_widget, browser_id);
+                let pw = build_pane_widget(&gl_area, surface_id);
                 if let Some(pane) = ws.panes.get(&pane_id) {
                     refresh_pane_tab_strip(&pw, pane, drop_preview, drop_preview_rect);
                 }
@@ -3802,34 +3841,91 @@ fn build_layout_widget(
                 pane_widgets.insert(pane_id, pw);
 
                 let tree = SplitTree::new_with_pane(pane_id);
-                (widget, tree)
+                return (widget, tree);
+            }
+
+            let first_is_browser = tabs[0].is_browser();
+
+            // Create the pane and its widget from the FIRST tab.
+            let pane_id = workspace::next_pane_id();
+            let (pw, first_stack_name) = if first_is_browser {
+                let url = tabs[0].url.as_deref().unwrap_or("");
+                let browser_id = browser::next_browser_id();
+                let browser_widget = browser::create(browser_id, url);
+
+                ws.add_pane(Pane::new_browser_with_id(pane_id, browser_id, url));
+                (
+                    build_browser_pane_widget(&browser_widget, browser_id),
+                    format!("browser-{browser_id}"),
+                )
             } else {
                 // Get working directory from first tab or default
-                let wd = tabs.first()
-                    .and_then(|t| t.working_directory.as_deref())
-                    .or(default_wd);
-
+                let wd = tabs[0].working_directory.as_deref().or(default_wd);
                 let surface_id = surfaces::pre_allocate_id();
                 let (gl_area, _) = surface::create_with_id(wd, command, Some(surface_id));
                 pending_ids.push(surface_id);
 
-                let pane = Pane::new_with_id(workspace::next_pane_id(), surface_id);
-                let pane_id = pane.id;
-                ws.add_pane(pane);
+                ws.add_pane(Pane::new_with_id(pane_id, surface_id));
+                (
+                    build_pane_widget(&gl_area, surface_id),
+                    format!("surface-{surface_id}"),
+                )
+            };
 
-                let pw = build_pane_widget(&gl_area, surface_id);
+            // Add the REMAINING tabs to the same pane. Previously every tab
+            // after the first was silently dropped, so a pane saved with
+            // [browser, terminal] restored only the browser and the terminal
+            // appeared to "move to a new workspace".
+            for tab in &tabs[1..] {
+                if tab.is_browser() {
+                    let url = tab.url.as_deref().unwrap_or("");
+                    let browser_id = browser::next_browser_id();
+                    let browser_widget = browser::create(browser_id, url);
+                    pw.stack.add_named(
+                        &browser_widget,
+                        Some(&format!("browser-{browser_id}")),
+                    );
 
-                // Populate tab strip
-                if let Some(pane) = ws.panes.get(&pane_id) {
-                    refresh_pane_tab_strip(&pw, pane, drop_preview, drop_preview_rect);
+                    let pane = ws.panes.get_mut(&pane_id).expect("pane was added above");
+                    pane.add_browser_tab(browser_id, url);
+                    if let Some(title) = tab.title.as_deref() {
+                        pane.set_browser_tab_title(browser_id, title);
+                    }
+                } else {
+                    let wd = tab.working_directory.as_deref().or(default_wd);
+                    let surface_id = surfaces::pre_allocate_id();
+                    let (gl_area, _) = surface::create_with_id(wd, command, Some(surface_id));
+                    pending_ids.push(surface_id);
+                    pw.stack.add_named(
+                        &gl_area,
+                        Some(&format!("surface-{surface_id}")),
+                    );
+
+                    let pane = ws.panes.get_mut(&pane_id).expect("pane was added above");
+                    pane.add_tab(surface_id);
+                    if let Some(title) = tab.title.as_deref() {
+                        pane.set_tab_title(surface_id, title);
+                    }
+                    if let Some(dir) = tab.working_directory.as_deref() {
+                        pane.set_tab_directory(surface_id, dir);
+                    }
                 }
-
-                let widget = pw.container.clone().upcast::<gtk4::Widget>();
-                pane_widgets.insert(pane_id, pw);
-
-                let tree = SplitTree::new_with_pane(pane_id);
-                (widget, tree)
             }
+
+            // Show the FIRST tab on restore, matching a freshly created pane.
+            // add_tab/add_browser_tab select the tab they add, so reset the
+            // data-model selection to 0 to stay in sync with the stack.
+            pw.stack.set_visible_child_name(&first_stack_name);
+            if let Some(pane) = ws.panes.get_mut(&pane_id) {
+                pane.select_tab(0);
+                refresh_pane_tab_strip(&pw, pane, drop_preview, drop_preview_rect);
+            }
+
+            let widget = pw.container.clone().upcast::<gtk4::Widget>();
+            pane_widgets.insert(pane_id, pw);
+
+            let tree = SplitTree::new_with_pane(pane_id);
+            (widget, tree)
         }
         crate::session::LayoutSnapshot::Split { orientation, ratio, first, second } => {
             let (first_widget, first_tree) = build_layout_widget(
