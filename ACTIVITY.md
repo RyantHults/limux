@@ -273,3 +273,26 @@ focused tab's cwd via OSC-0, sends `new_tab`, asserts the new terminal's
 `PWDINIT`). Confirmed it FAILS on the old code and PASSES on the fix; full MVP
 suite (10 tests) passes. Also added a `new_tab()` helper to the `limux.py` test
 client.
+
+## 2026-08-06 — Desktop integration version-staleness bug fix
+
+**Bug:** after a user integrates limux with the desktop (first-run prompt),
+the integration check was existence-only. On a later app download the prompt
+never reappeared, even though the installed `.desktop` file was for an older
+version — the running binary's version no longer matched the file's
+`X-AppImage-Version=`.
+
+**Fix:** `app/src/install.rs` — added `installed_version()` (reads
+`X-AppImage-Version=` from `~/.local/share/applications/limux.desktop`, line
+scan, `None` when missing/unreadable/absent) and `is_version_stale()`
+(string-equality against `CARGO_PKG_VERSION`, gated on `is_appimage()`).
+`is_integrated()` stays "file exists" (option A) so existing callers are
+unaffected. `app/src/install_prompt.rs` — `maybe_show()` now gates on
+version-equality instead of file-existence: first-run prompt when no
+`.desktop` file, upgrade prompt (different copy, "Update limux desktop
+integration?") when the installed version differs, no-op when they match.
+`app/src/settings_ui.rs` — integrated status label now shows the version
+("Integrated as vX.Y.Z", or "Integrated as vX — running vY" when stale).
+
+**Verification:** `cargo build` clean (0 errors) inside the nix dev shell;
+`target/debug/limux` links.
