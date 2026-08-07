@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
+use std::sync::OnceLock;
 
 use glib::translate::FromGlibPtrNone;
 use gtk4::prelude::*;
@@ -151,6 +152,78 @@ fn icon_button(icon: &str, tooltip: &str) -> gtk4::Button {
     btn
 }
 
+// ── Persistent network session ────────────────────────────────────────
+//
+// Every browser webview (local, remote/proxy, and window.open() popups)
+// shares one app-owned WebKitNetworkSession backed by an explicit data
+// directory under $XDG_DATA_HOME. Previously local browsers relied on the
+// process-global default session (whose backing directory is the implicit
+// ~/.local/share/webkitgtk) and remote/proxy browsers created an isolated
+// session per view; either way cookie/site-data persistence silently broke
+// whenever the implicit default path differed between runs (AppImage mounts,
+// varying $XDG_DATA_HOME, different launch environments). An explicit,
+// stable directory fixes persistence across sessions.
+
+/// Process-wide handle to the persistent WebKitNetworkSession. The raw
+/// pointer is safe to share: the session is created once, kept alive for the
+/// lifetime of the process, and only dereferenced (via WebKit calls) from the
+/// app's main thread where all webview creation happens.
+struct PersistentSession(*mut WebKitNetworkSession);
+unsafe impl Send for PersistentSession {}
+unsafe impl Sync for PersistentSession {}
+
+static PERSISTENT_SESSION: OnceLock<PersistentSession> = OnceLock::new();
+
+/// Resolve the XDG data home: honor `$XDG_DATA_HOME`, else `~/.local/share`.
+fn xdg_data_home() -> Option<std::path::PathBuf> {
+    if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
+        let p = std::path::PathBuf::from(v);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
+}
+
+/// Get the process-wide persistent network session, creating it on first use.
+/// All webviews must go through this so cookies/localStorage/IndexedDB are
+/// stored in a single stable directory — never a second session on the same
+/// directory (WebKit warns "GeneralStorageDirectory ... is already in use"
+/// and the cookie file can race).
+fn create_persistent_session() -> *mut WebKitNetworkSession {
+    PERSISTENT_SESSION
+        .get_or_init(|| PersistentSession(build_persistent_session()))
+        .0
+}
+
+/// Build the persistent session with an explicit app-owned data directory:
+/// `$XDG_DATA_HOME/limux/web-data` (default `~/.local/share/limux/web-data`).
+fn build_persistent_session() -> *mut WebKitNetworkSession {
+    let data_dir = match xdg_data_home() {
+        Some(base) => base.join("limux").join("web-data"),
+        None => {
+            eprintln!("[browser] cannot resolve XDG data home; using WebKit default data dir");
+            return unsafe { webkit_network_session_new(std::ptr::null(), std::ptr::null()) };
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        eprintln!(
+            "[browser] failed to create web data dir {}: {e}; using WebKit default data dir",
+            data_dir.display()
+        );
+        return unsafe { webkit_network_session_new(std::ptr::null(), std::ptr::null()) };
+    }
+    eprintln!("[browser] persistent web data dir: {}", data_dir.display());
+
+    let Ok(data_c) = CString::new(data_dir.to_string_lossy().as_bytes()) else {
+        eprintln!("[browser] web data dir contains NUL; using WebKit default data dir");
+        return unsafe { webkit_network_session_new(std::ptr::null(), std::ptr::null()) };
+    };
+    // Pass the same base path for data and cache; WebKit derives the cookie,
+    // localStorage, IndexedDB, and disk-cache subdirectories beneath it.
+    unsafe { webkit_network_session_new(data_c.as_ptr(), data_c.as_ptr()) }
+}
+
 // ── Create a browser widget ────────────────────────────────────────────
 
 /// Create a browser panel widget, returning the top-level container and the
@@ -262,46 +335,70 @@ fn create_inner(
     container.append(&find_bar);
 
     // ── WebKitWebView ──────────────────────────────────────────────
-    let webview_ptr = if let Some(ep) = proxy {
-        // Create an isolated network session with SOCKS5 proxy for remote workspaces.
-        unsafe {
-            let session = webkit_network_session_new(std::ptr::null(), std::ptr::null());
-            let proxy_uri = ep.socks5_uri();
-            if let Ok(uri_c) = CString::new(proxy_uri.as_str()) {
-                let settings =
-                    webkit_network_proxy_settings_new(uri_c.as_ptr(), std::ptr::null());
-                webkit_network_session_set_proxy_settings(
-                    session,
-                    WEBKIT_NETWORK_PROXY_MODE_CUSTOM,
-                    settings,
-                );
+    // All three creation paths share the same persistent network session so
+    // cookies and site data live in a stable, app-owned directory across app
+    // restarts. The only differences between paths:
+    //   - proxy: configure the shared session's proxy after creation.
+    //   - related: also pass the construct-only "related-view" property.
+    //   - otherwise: plain webview on the persistent session.
+    let webview_ptr = {
+        let persistent_session = create_persistent_session();
+
+        if let Some(ep) = proxy {
+            // Remote-workspace browsers share the persistent session (so their
+            // cookies persist) but route traffic through the SOCKS5 tunnel.
+            unsafe {
+                let proxy_uri = ep.socks5_uri();
+                apply_socks5_proxy(persistent_session, &proxy_uri);
+                let prop_name = CString::new("network-session").unwrap();
+                glib::gobject_ffi::g_object_new(
+                    webkit_web_view_get_type(),
+                    prop_name.as_ptr(),
+                    persistent_session,
+                    std::ptr::null::<libc::c_char>(),
+                ) as *mut gtk4::ffi::GtkWidget
             }
-            let prop_name = CString::new("network-session").unwrap();
-            glib::gobject_ffi::g_object_new(
-                webkit_web_view_get_type(),
-                prop_name.as_ptr(),
-                session,
-                std::ptr::null::<libc::c_char>(),
-            ) as *mut gtk4::ffi::GtkWidget
+        } else if let Some(opener) = related_opener {
+            // Popup created from window.open(): the view returned from the
+            // "create" signal handler MUST be related to the opener — WebKitGTK
+            // reads the opener's window features from the related view and aborts
+            // on a disengaged std::optional<WindowFeatures> otherwise. There is
+            // no webkit_web_view_new_with_related_view() in WebKitGTK 6.0, so set
+            // the construct-only "related-view" property via g_object_new. Reuse
+            // the opener's network session (cookies set by the opener are visible
+            // in the popup), falling back to the persistent session.
+            unsafe {
+                let mut session = webkit_web_view_get_network_session(opener);
+                if session.is_null() {
+                    session = persistent_session;
+                }
+                let net_prop = CString::new("network-session").unwrap();
+                let rel_prop = CString::new("related-view").unwrap();
+                // "network-session" must come before "related-view".
+                glib::gobject_ffi::g_object_new(
+                    webkit_web_view_get_type(),
+                    net_prop.as_ptr(),
+                    session,
+                    rel_prop.as_ptr(),
+                    opener,
+                    std::ptr::null::<libc::c_char>(),
+                ) as *mut gtk4::ffi::GtkWidget
+            }
+        } else {
+            // Local browser: attach the persistent session via the
+            // construct-only "network-session" property instead of
+            // webkit_web_view_new() (which uses the process-global default
+            // session and its implicit, environment-dependent data dir).
+            unsafe {
+                let prop_name = CString::new("network-session").unwrap();
+                glib::gobject_ffi::g_object_new(
+                    webkit_web_view_get_type(),
+                    prop_name.as_ptr(),
+                    persistent_session,
+                    std::ptr::null::<libc::c_char>(),
+                ) as *mut gtk4::ffi::GtkWidget
+            }
         }
-    } else if let Some(opener) = related_opener {
-        // Popup created from window.open(): the view returned from the
-        // "create" signal handler MUST be related to the opener — WebKitGTK
-        // reads the opener's window features from the related view and aborts
-        // on a disengaged std::optional<WindowFeatures> otherwise. There is
-        // no webkit_web_view_new_with_related_view() in WebKitGTK 6.0, so set
-        // the construct-only "related-view" property via g_object_new.
-        unsafe {
-            let prop_name = CString::new("related-view").unwrap();
-            glib::gobject_ffi::g_object_new(
-                webkit_web_view_get_type(),
-                prop_name.as_ptr(),
-                opener,
-                std::ptr::null::<libc::c_char>(),
-            ) as *mut gtk4::ffi::GtkWidget
-        }
-    } else {
-        unsafe { webkit_web_view_new() }
     };
     let webview_widget: gtk4::Widget =
         unsafe { glib::Object::from_glib_none(webview_ptr as *mut glib::gobject_ffi::GObject) }
@@ -321,6 +418,15 @@ fn create_inner(
     }
     container.append(&webview_widget);
 
+    // ── Focus: when the WebView gains focus, mark the owning pane
+    //    active (mirrors the terminal GLArea focus hook in input.rs) ─
+    let browser_id = id;
+    let focus_ctrl = gtk4::EventControllerFocus::new();
+    focus_ctrl.connect_enter(move |_ctrl| {
+        crate::window::set_focused_browser(browser_id);
+    });
+    webview_widget.add_controller(focus_ctrl);
+
     // Load initial URL
     let wv_ptr = webview_ptr as *mut WebKitWebView;
     if !initial_url.is_empty() {
@@ -330,7 +436,6 @@ fn create_inner(
     }
 
     // ── Signal: title changed → update tab label ───────────────────
-    let browser_id = id;
     webview_widget.connect_notify_local(Some("title"), move |widget: &gtk4::Widget, _| {
         let ptr = widget.as_ptr() as *mut WebKitWebView;
         let title = unsafe { crate::util::cstr_to_string(webkit_web_view_get_title(ptr)) }
