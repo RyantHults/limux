@@ -253,16 +253,11 @@ fn attach_drag_and_drop(row: &gtk4::ListBoxRow, workspace_id: WorkspaceId) {
     let drop_target = gtk4::DropTarget::new(gtk4::glib::Type::STRING, gdk4::DragAction::MOVE);
 
     let row_weak = row.downgrade();
-    drop_target.connect_motion(move |_target, _x, y| {
+    drop_target.connect_motion(move |_target, _x, _y| {
         if let Some(row) = row_weak.upgrade() {
-            let height = row.height() as f64;
             row.remove_css_class("drop-above");
             row.remove_css_class("drop-below");
-            if y < height / 2.0 {
-                row.add_css_class("drop-above");
-            } else {
-                row.add_css_class("drop-below");
-            }
+            row.add_css_class("workspace-tab-drop");
         }
         gdk4::DragAction::MOVE
     });
@@ -272,6 +267,7 @@ fn attach_drag_and_drop(row: &gtk4::ListBoxRow, workspace_id: WorkspaceId) {
         if let Some(row) = row_weak.upgrade() {
             row.remove_css_class("drop-above");
             row.remove_css_class("drop-below");
+            row.remove_css_class("workspace-tab-drop");
         }
     });
 
@@ -282,10 +278,40 @@ fn attach_drag_and_drop(row: &gtk4::ListBoxRow, workspace_id: WorkspaceId) {
         if let Some(row) = row_weak.upgrade() {
             row.remove_css_class("drop-above");
             row.remove_css_class("drop-below");
+            row.remove_css_class("workspace-tab-drop");
         }
 
-        let Ok(source_str) = value.get::<String>() else { return false };
-        let Ok(source_id) = source_str.parse::<WorkspaceId>() else { return false };
+        let Ok(payload) = value.get::<String>() else {
+            return false;
+        };
+
+        // Tab drags carry the source pane and stable panel identity. Workspace drags keep
+        // their legacy bare-ID payload so row reordering remains unchanged.
+        if let Some((source_pane_id, source_identity)) =
+            crate::window::parse_tab_drag_payload(&payload)
+        {
+            let Some(source_ws_id) = crate::window::workspace_id_for_pane(source_pane_id) else {
+                return false;
+            };
+            if source_ws_id == target_ws_id {
+                return false;
+            }
+            if crate::window::pane_tab_count_for_identity(source_pane_id, source_identity).is_none()
+            {
+                return false;
+            }
+
+            // Defer until GTK has finished cleaning up the drag, like the
+            // pane drop targets in tab_strip.rs do before reparenting widgets.
+            gtk4::glib::idle_add_local_once(move || {
+                crate::window::move_tab_to_workspace(source_pane_id, source_identity, target_ws_id);
+            });
+            return true;
+        }
+
+        let Ok(source_id) = payload.parse::<WorkspaceId>() else {
+            return false;
+        };
 
         if source_id == target_ws_id {
             return false; // Can't drop on self
@@ -713,10 +739,23 @@ fn generate_css(dark: bool, bell_hex: &str) -> String {
         .drag-active { opacity: 0.5; }
         .drop-above { border-top: 2px solid @theme_selected_bg_color; }
         .drop-below { border-bottom: 2px solid @theme_selected_bg_color; }
+        .workspace-tab-drop { background-color: alpha(@theme_selected_bg_color, 0.18); }
         .pane-tab-strip {
             min-height: 24px;
             padding: 2px 4px;
             border-bottom: 1px solid @borders;
+        }
+        .pane-tab-strip.tab-drop-active {
+            background-color: alpha(@theme_selected_bg_color, 0.08);
+        }
+        .pane-tab-strip.tab-drop-end {
+            border-right: 2px solid @theme_selected_bg_color;
+        }
+        .tab-drop-before {
+            border-left: 2px solid @theme_selected_bg_color;
+        }
+        .tab-drop-after {
+            border-right: 2px solid @theme_selected_bg_color;
         }
         .pane-tab {
             margin: 0 2px;

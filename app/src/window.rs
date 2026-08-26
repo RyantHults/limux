@@ -19,6 +19,71 @@ use crate::surface;
 use crate::surfaces;
 use crate::workspace::{self, Pane, PaneId, PanelKind, Workspace, WorkspaceId};
 
+/// Stable identity used by tab drag payloads.  Tab indices can change while
+/// GTK is finishing a drag, but panel IDs remain tied to the live panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabDragIdentity {
+    Surface(crate::split::SurfaceId),
+    Browser(crate::browser::BrowserPanelId),
+}
+
+/// Where a tab should be inserted in a destination pane.  `Before` carries a
+/// stable panel anchor; `Append` is explicit for the end of the strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabInsertion {
+    Before(TabDragIdentity),
+    Append,
+}
+
+impl TabDragIdentity {
+    fn matches_panel(self, panel: &PanelKind) -> bool {
+        match (self, panel) {
+            (Self::Surface(source_id), PanelKind::Terminal { surface_id }) => {
+                source_id == *surface_id
+            }
+            (Self::Browser(source_id), PanelKind::Browser { browser_id, .. }) => {
+                source_id == *browser_id
+            }
+            _ => false,
+        }
+    }
+}
+
+fn panel_drag_identity(panel: &PanelKind) -> TabDragIdentity {
+    match panel {
+        PanelKind::Terminal { surface_id } => TabDragIdentity::Surface(*surface_id),
+        PanelKind::Browser { browser_id, .. } => TabDragIdentity::Browser(*browser_id),
+    }
+}
+
+/// Encode a tab drag payload without relying on its position in the pane.
+pub(crate) fn tab_drag_payload(pane_id: PaneId, panel: &PanelKind) -> String {
+    match panel_drag_identity(panel) {
+        TabDragIdentity::Surface(surface_id) => format!("pane:{pane_id}:surface:{surface_id}"),
+        TabDragIdentity::Browser(browser_id) => format!("pane:{pane_id}:browser:{browser_id}"),
+    }
+}
+
+/// Parse a stable tab drag payload.  Unknown or legacy tab-index payloads are
+/// rejected so a stale drag cannot act on a different tab.
+pub(crate) fn parse_tab_drag_payload(payload: &str) -> Option<(PaneId, TabDragIdentity)> {
+    let rest = payload.strip_prefix("pane:")?;
+    let mut fields = rest.split(':');
+    let pane_id = fields.next()?.parse().ok()?;
+    let panel_kind = fields.next()?;
+    let panel_id = fields.next()?.parse().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+
+    let identity = match panel_kind {
+        "surface" => TabDragIdentity::Surface(panel_id),
+        "browser" => TabDragIdentity::Browser(panel_id),
+        _ => return None,
+    };
+    Some((pane_id, identity))
+}
+
 // ── PanelOps trait ─────────────────────────────────────────────────
 
 /// GTK-aware operations on `PanelKind`. Keeps `workspace.rs` free of UI deps.
@@ -641,6 +706,43 @@ fn build_browser_pane_widget(
     pw
 }
 
+enum TabPanelWidget {
+    Terminal {
+        gl_area: gtk4::GLArea,
+        surface_id: crate::split::SurfaceId,
+    },
+    Browser {
+        widget: gtk4::Box,
+        browser_id: browser::BrowserPanelId,
+    },
+}
+
+/// Resolve the typed live widget for a tab before a tab/split mutation starts.
+fn tab_panel_widget(panel: &PanelKind, widget: &gtk4::Widget) -> Option<TabPanelWidget> {
+    match panel {
+        PanelKind::Terminal { surface_id } => Some(TabPanelWidget::Terminal {
+            gl_area: widget.clone().downcast().ok()?,
+            surface_id: *surface_id,
+        }),
+        PanelKind::Browser { browser_id, .. } => Some(TabPanelWidget::Browser {
+            widget: widget.clone().downcast().ok()?,
+            browser_id: *browser_id,
+        }),
+    }
+}
+
+fn build_tab_panel_widget(panel_widget: TabPanelWidget) -> PaneWidget {
+    match panel_widget {
+        TabPanelWidget::Terminal {
+            gl_area,
+            surface_id,
+        } => build_pane_widget(&gl_area, surface_id),
+        TabPanelWidget::Browser { widget, browser_id } => {
+            build_browser_pane_widget(&widget, browser_id)
+        }
+    }
+}
+
 /// Delegate to tab_strip module.
 fn refresh_pane_tab_strip(
     pane_widget: &PaneWidget,
@@ -684,11 +786,46 @@ pub(crate) fn rename_tab(pane_id: PaneId, tab_idx: usize, new_name: &str) {
 }
 
 /// Get the number of tabs in a pane. Used by tab_strip.rs during drag-and-drop.
-pub(crate) fn pane_tab_count(pane_id: PaneId) -> usize {
+pub(crate) fn pane_tab_count_for_identity(
+    pane_id: PaneId,
+    identity: TabDragIdentity,
+) -> Option<usize> {
     with_app_window(|aw| {
-        aw.workspaces.iter()
-            .find_map(|ws| ws.panes.get(&pane_id).map(|p| p.tabs.len()))
-            .unwrap_or(0)
+        aw.workspaces.iter().find_map(|ws| {
+            let pane = ws.panes.get(&pane_id)?;
+            if pane
+                .tabs
+                .iter()
+                .any(|tab| identity.matches_panel(&tab.panel))
+            {
+                Some(pane.tabs.len())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+pub(crate) fn workspace_id_for_pane(pane_id: PaneId) -> Option<WorkspaceId> {
+    with_app_window(|aw| {
+        aw.workspaces
+            .iter()
+            .find(|ws| ws.panes.contains_key(&pane_id))
+            .map(|ws| ws.id)
+    })
+}
+
+/// Capture a stable insertion anchor from the pane's current tab order.
+pub(crate) fn tab_insertion_for_pane(
+    pane_id: PaneId,
+    insertion_index: usize,
+) -> Option<TabInsertion> {
+    with_app_window(|aw| {
+        let pane = aw.workspaces.iter().find_map(|ws| ws.panes.get(&pane_id))?;
+        Some(match pane.tabs.get(insertion_index) {
+            Some(tab) => TabInsertion::Before(panel_drag_identity(&tab.panel)),
+            None => TabInsertion::Append,
+        })
     })
 }
 
@@ -1923,6 +2060,35 @@ fn set_pane_active(aw: &mut AppWindow, ws_idx: usize, pane_id: PaneId) {
     }
 }
 
+fn tab_index_for_identity(pane: &workspace::Pane, identity: TabDragIdentity) -> Option<usize> {
+    pane.tabs
+        .iter()
+        .position(|tab| identity.matches_panel(&tab.panel))
+}
+
+fn insertion_index_for_target(pane: &workspace::Pane, insertion: TabInsertion) -> Option<usize> {
+    match insertion {
+        TabInsertion::Before(anchor) => tab_index_for_identity(pane, anchor),
+        TabInsertion::Append => Some(pane.tabs.len()),
+    }
+}
+
+/// Remove a tab while keeping the same logical tab selected when possible.
+fn remove_tab_preserving_selection(pane: &mut workspace::Pane, tab_idx: usize) -> workspace::Tab {
+    let selected = pane.selected_tab;
+    let tab = pane.tabs.remove(tab_idx);
+    pane.selected_tab = if pane.tabs.is_empty() {
+        0
+    } else if selected > tab_idx {
+        selected - 1
+    } else if selected == tab_idx {
+        tab_idx.min(pane.tabs.len() - 1)
+    } else {
+        selected.min(pane.tabs.len() - 1)
+    };
+    tab
+}
+
 pub(crate) fn move_pane(source_pane_id: PaneId, target_pane_id: PaneId, before: bool, orientation: Orientation) {
     with_app_window_mut(|aw| {
 
@@ -1958,7 +2124,7 @@ pub(crate) fn move_pane(source_pane_id: PaneId, target_pane_id: PaneId, before: 
 /// Used when dragging a tab within the same pane to a drop zone edge.
 pub(crate) fn split_tab_to_pane(
     source_pane_id: PaneId,
-    tab_idx: usize,
+    source_identity: TabDragIdentity,
     orientation: Orientation,
     before: bool,
 ) {
@@ -1969,30 +2135,64 @@ pub(crate) fn split_tab_to_pane(
 
         let ws_id = aw.workspaces[ws_idx].id;
 
-        // Must have > 1 tab to extract one
-        let tab_count = aw.workspaces[ws_idx]
-            .panes
-            .get(&source_pane_id)
-            .map(|p| p.tabs.len())
-            .unwrap_or(0);
-        if tab_count < 2 {
+        let Some(source_pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) else {
+            return;
+        };
+        if source_pane.tabs.len() < 2
+            || aw.workspaces[ws_idx]
+                .split_tree
+                .node_id_for_pane(source_pane_id)
+                .is_none()
+        {
             return;
         }
-
-        // Remove the tab from the source pane
-        let tab = {
-            let Some(pane) = aw.workspaces[ws_idx].panes.get_mut(&source_pane_id) else { return };
-            if tab_idx >= pane.tabs.len() { return; }
-            let tab = pane.tabs.remove(tab_idx);
-            if pane.selected_tab >= pane.tabs.len() && !pane.tabs.is_empty() {
-                pane.selected_tab = pane.tabs.len() - 1;
-            }
-            tab
+        let Some(tab_idx) = tab_index_for_identity(source_pane, source_identity) else {
+            return;
+        };
+        let Some(source_widgets) = aw.workspace_widgets.get(&ws_id) else {
+            return;
+        };
+        let Some(source_pw) = source_widgets.pane_widgets.get(&source_pane_id) else {
+            return;
+        };
+        let Some(tab) = source_pane.tabs.get(tab_idx) else {
+            return;
+        };
+        let panel = tab.panel.clone();
+        let widget_name = panel.stack_child_name();
+        let Some(moving_widget) = source_pw.stack.child_by_name(&widget_name) else {
+            return;
+        };
+        let Some(panel_widget) = tab_panel_widget(&panel, &moving_widget) else {
+            return;
+        };
+        let pane_count_before = aw.workspaces[ws_idx].panes.len();
+        let source_container = source_pw.container.clone();
+        let nested_parent = if pane_count_before > 1 {
+            let Some(parent) = source_container
+                .parent()
+                .and_then(|parent| parent.downcast::<gtk4::Paned>().ok())
+            else {
+                return;
+            };
+            let is_start = parent.start_child().map_or(false, |child| {
+                child == *source_container.upcast_ref::<gtk4::Widget>()
+            });
+            Some((parent, is_start))
+        } else {
+            None
+        };
+        let Some((drop_preview, drop_preview_rect)) = aw
+            .workspace_widgets
+            .get(&ws_id)
+            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()))
+        else {
+            return;
         };
 
         // Create a new pane with the extracted tab
         let new_pane_id = workspace::next_pane_id();
-        let mut new_pane = match &tab.panel {
+        let mut new_pane = match &panel {
             PanelKind::Terminal { surface_id } => Pane::new_with_id(new_pane_id, *surface_id),
             PanelKind::Browser { browser_id, url } => {
                 Pane::new_browser_with_id(new_pane_id, *browser_id, url)
@@ -2004,60 +2204,39 @@ pub(crate) fn split_tab_to_pane(
             new_tab.working_directory = tab.working_directory.clone();
         }
 
-        let pane_count_before = aw.workspaces[ws_idx].panes.len();
+        // All fallible work is complete before either model or widget changes.
+        {
+            let source_pane = aw.workspaces[ws_idx]
+                .panes
+                .get_mut(&source_pane_id)
+                .expect("validated source pane");
+            remove_tab_preserving_selection(source_pane, tab_idx);
+        }
         aw.workspaces[ws_idx].add_pane(new_pane);
-
-        // Build widget for new pane — reuse existing GLArea/browser widget from the stack
-        let new_pane_widget = match &tab.panel {
-            PanelKind::Terminal { surface_id } => {
-                if let Some(gl_area) = surfaces::get_gl_area(*surface_id) {
-                    // Remove from old pane's stack
-                    if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                        if let Some(old_pw) = widgets.pane_widgets.get(&source_pane_id) {
-                            old_pw.stack.remove(&gl_area);
-                        }
-                    }
-                    build_pane_widget(&gl_area, *surface_id)
-                } else {
-                    return;
-                }
-            }
-            PanelKind::Browser { browser_id, .. } => {
-                if let Some(bw) = browser::get_widget(*browser_id)
-                    .and_then(|w| w.downcast::<gtk4::Box>().ok())
-                {
-                    if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                        if let Some(old_pw) = widgets.pane_widgets.get(&source_pane_id) {
-                            old_pw.stack.remove(&bw);
-                        }
-                    }
-                    build_browser_pane_widget(&bw, *browser_id)
-                } else {
-                    return;
-                }
-            }
-        };
+        source_pw.stack.remove(&moving_widget);
+        let new_pane_widget = build_tab_panel_widget(panel_widget);
 
         // Refresh source pane tab strip (tab was removed)
-        let dp = aw.workspace_widgets.get(&ws_id)
-            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()));
-        if let Some((dp_w, dp_r)) = dp.as_ref() {
-            // Also set visible child on source pane to its new selected tab
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) {
-                if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                    if let Some(pw) = widgets.pane_widgets.get(&source_pane_id) {
-                        if let Some(active_tab) = pane.tabs.get(pane.selected_tab) {
-                            pw.stack.set_visible_child_name(&active_tab.panel.stack_child_name());
-                        }
-                        refresh_pane_tab_strip(pw, pane, dp_w, dp_r);
-                    }
-                }
-            }
-            // Refresh new pane tab strip
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&new_pane_id) {
-                refresh_pane_tab_strip(&new_pane_widget, pane, dp_w, dp_r);
-            }
+        let source_pane = aw.workspaces[ws_idx]
+            .panes
+            .get(&source_pane_id)
+            .expect("source pane still has tabs");
+        if let Some(active_tab) = source_pane.tabs.get(source_pane.selected_tab) {
+            source_pw
+                .stack
+                .set_visible_child_name(&active_tab.panel.stack_child_name());
         }
+        refresh_pane_tab_strip(source_pw, source_pane, &drop_preview, &drop_preview_rect);
+        let new_pane = aw.workspaces[ws_idx]
+            .panes
+            .get(&new_pane_id)
+            .expect("new pane was inserted");
+        refresh_pane_tab_strip(
+            &new_pane_widget,
+            new_pane,
+            &drop_preview,
+            &drop_preview_rect,
+        );
 
         // Update split tree: split source_pane, placing new_pane according to `before`
         let target_pane_id = source_pane_id;
@@ -2066,55 +2245,75 @@ pub(crate) fn split_tab_to_pane(
                 target_pane_id, new_pane_id, orientation,
             )
         } else {
-            aw.workspaces[ws_idx].split_tree.split(
-                target_pane_id, new_pane_id, orientation,
-            )
-        };
+            aw.workspaces[ws_idx]
+                .split_tree
+                .split(target_pane_id, new_pane_id, orientation)
+        }
+        .expect("validated source pane must be splittable");
 
         // Insert widget into the split layout
         let gtk_orient: gtk4::Orientation = orientation.into();
 
-        // Pre-clone tree snapshot for the multi-pane rebuild path (avoids borrow conflict)
-        let tree_snapshot = if pane_count_before > 1 {
-            clone_split_tree_structure(
-                &aw.workspaces[ws_idx].split_tree,
-                &aw.workspaces[ws_idx].panes,
-            )
-        } else {
-            None
-        };
-
-        if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
-            if pane_count_before == 1 {
-                // First split: use existing root_paned
-                widgets.root_paned.set_orientation(gtk_orient);
-                if before {
-                    let source_container = widgets.pane_widgets.get(&source_pane_id)
-                        .map(|pw| pw.container.clone());
-                    widgets.root_paned.grab_focus();
-                    widgets.root_paned.set_start_child(gtk4::Widget::NONE);
-                    widgets.root_paned.set_end_child(gtk4::Widget::NONE);
-                    widgets.root_paned.set_start_child(Some(&new_pane_widget.container));
-                    if let Some(ref sc) = source_container {
-                        widgets.root_paned.set_end_child(Some(sc));
-                    }
-                } else {
-                    widgets.root_paned.set_end_child(Some(&new_pane_widget.container));
-                }
-
-                if let Some(nid) = split_node_id {
-                    widgets.split_paneds.insert(nid, widgets.root_paned.clone());
-                    connect_paned_ratio_sync(&widgets.root_paned, ws_id, nid);
-                }
-                set_paned_separator_cursor(&widgets.root_paned);
-
-                set_paned_position_after_layout(&widgets.root_paned, 0.5);
-                widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
+        let widgets = aw
+            .workspace_widgets
+            .get_mut(&ws_id)
+            .expect("validated workspace widgets");
+        if pane_count_before == 1 {
+            // First split: use existing root_paned
+            widgets.root_paned.set_orientation(gtk_orient);
+            if before {
+                widgets.root_paned.grab_focus();
+                widgets.root_paned.set_start_child(gtk4::Widget::NONE);
+                widgets.root_paned.set_end_child(gtk4::Widget::NONE);
+                widgets
+                    .root_paned
+                    .set_start_child(Some(&new_pane_widget.container));
+                widgets.root_paned.set_end_child(Some(&source_container));
             } else {
-                // Multiple panes: rebuild entire widget tree from split tree
-                widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
-                rebuild_split_widgets_from_snapshot(&tree_snapshot, widgets, ws_id);
+                widgets
+                    .root_paned
+                    .set_end_child(Some(&new_pane_widget.container));
             }
+            widgets
+                .split_paneds
+                .insert(split_node_id, widgets.root_paned.clone());
+            connect_paned_ratio_sync(&widgets.root_paned, ws_id, split_node_id);
+            set_paned_separator_cursor(&widgets.root_paned);
+
+            set_paned_position_after_layout(&widgets.root_paned, 0.5);
+            widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
+        } else {
+            // Multiple panes: wrap the source container in a new split.
+            let (parent_paned, is_start) = nested_parent.as_ref().expect("validated source parent");
+            let new_paned = gtk4::Paned::new(gtk_orient);
+            configure_split_paned(&new_paned);
+            if *is_start {
+                parent_paned.set_start_child(gtk4::Widget::NONE);
+                if before {
+                    new_paned.set_start_child(Some(&new_pane_widget.container));
+                    new_paned.set_end_child(Some(&source_container));
+                } else {
+                    new_paned.set_start_child(Some(&source_container));
+                    new_paned.set_end_child(Some(&new_pane_widget.container));
+                }
+                parent_paned.set_start_child(Some(&new_paned));
+            } else {
+                parent_paned.set_end_child(gtk4::Widget::NONE);
+                if before {
+                    new_paned.set_start_child(Some(&new_pane_widget.container));
+                    new_paned.set_end_child(Some(&source_container));
+                } else {
+                    new_paned.set_start_child(Some(&source_container));
+                    new_paned.set_end_child(Some(&new_pane_widget.container));
+                }
+                parent_paned.set_end_child(Some(&new_paned));
+            }
+            widgets
+                .split_paneds
+                .insert(split_node_id, new_paned.clone());
+            connect_paned_ratio_sync(&new_paned, ws_id, split_node_id);
+            set_paned_position_after_layout(&new_paned, 0.5);
+            widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
         }
         set_pane_active(aw, ws_idx, new_pane_id);
     });
@@ -2123,7 +2322,7 @@ pub(crate) fn split_tab_to_pane(
 /// Extract a tab from a source pane and split it adjacent to a *different* target pane.
 pub(crate) fn split_tab_to_pane_target(
     source_pane_id: PaneId,
-    tab_idx: usize,
+    source_identity: TabDragIdentity,
     target_pane_id: PaneId,
     orientation: Orientation,
     before: bool,
@@ -2136,20 +2335,70 @@ pub(crate) fn split_tab_to_pane_target(
 
         let ws_id = aw.workspaces[ws_idx].id;
 
-        // Remove the tab from the source pane
-        let tab = {
-            let Some(pane) = aw.workspaces[ws_idx].panes.get_mut(&source_pane_id) else { return };
-            if tab_idx >= pane.tabs.len() { return; }
-            let tab = pane.tabs.remove(tab_idx);
-            if pane.selected_tab >= pane.tabs.len() && !pane.tabs.is_empty() {
-                pane.selected_tab = pane.tabs.len() - 1;
-            }
-            tab
+        if source_pane_id == target_pane_id
+            || aw.workspaces[ws_idx]
+                .split_tree
+                .node_id_for_pane(source_pane_id)
+                .is_none()
+            || aw.workspaces[ws_idx]
+                .split_tree
+                .node_id_for_pane(target_pane_id)
+                .is_none()
+        {
+            return;
+        }
+        let Some(source_pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) else {
+            return;
         };
-
-        // Build new pane from the extracted tab
+        let Some(tab_idx) = tab_index_for_identity(source_pane, source_identity) else {
+            return;
+        };
+        let Some(tab) = source_pane.tabs.get(tab_idx) else {
+            return;
+        };
+        let panel = tab.panel.clone();
+        let widget_name = panel.stack_child_name();
+        let (moving_widget, source_stack, source_container) = {
+            let Some(source_widgets) = aw.workspace_widgets.get(&ws_id) else {
+                return;
+            };
+            let Some(source_pw) = source_widgets.pane_widgets.get(&source_pane_id) else {
+                return;
+            };
+            let Some(target_pw) = source_widgets.pane_widgets.get(&target_pane_id) else {
+                return;
+            };
+            let Some(moving_widget) = source_pw.stack.child_by_name(&widget_name) else {
+                return;
+            };
+            if target_pw.stack.child_by_name(&widget_name).is_some() {
+                return;
+            }
+            (
+                moving_widget,
+                source_pw.stack.clone(),
+                source_pw.container.clone(),
+            )
+        };
+        let Some(panel_widget) = tab_panel_widget(&panel, &moving_widget) else {
+            return;
+        };
+        let source_parent = source_container
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk4::Paned>().ok());
+        if source_parent.is_none() {
+            return;
+        }
+        let Some((drop_preview, drop_preview_rect)) = aw
+            .workspace_widgets
+            .get(&ws_id)
+            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()))
+        else {
+            return;
+        };
+        // All fallible work is complete before either model or widget changes.
         let new_pane_id = workspace::next_pane_id();
-        let mut new_pane = match &tab.panel {
+        let mut new_pane = match &panel {
             PanelKind::Terminal { surface_id } => Pane::new_with_id(new_pane_id, *surface_id),
             PanelKind::Browser { browser_id, url } => {
                 Pane::new_browser_with_id(new_pane_id, *browser_id, url)
@@ -2159,99 +2408,87 @@ pub(crate) fn split_tab_to_pane_target(
             new_tab.title = tab.title.clone();
             new_tab.working_directory = tab.working_directory.clone();
         }
+
+        remove_tab_preserving_selection(
+            aw.workspaces[ws_idx]
+                .panes
+                .get_mut(&source_pane_id)
+                .expect("validated source pane"),
+            tab_idx,
+        );
         aw.workspaces[ws_idx].add_pane(new_pane);
+        source_stack.remove(&moving_widget);
+        let new_pane_widget = build_tab_panel_widget(panel_widget);
 
-        // Move the widget from source stack to new pane widget
-        let new_pane_widget = match &tab.panel {
-            PanelKind::Terminal { surface_id } => {
-                if let Some(gl_area) = surfaces::get_gl_area(*surface_id) {
-                    if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                        if let Some(old_pw) = widgets.pane_widgets.get(&source_pane_id) {
-                            old_pw.stack.remove(&gl_area);
-                        }
-                    }
-                    build_pane_widget(&gl_area, *surface_id)
-                } else {
-                    return;
-                }
-            }
-            PanelKind::Browser { browser_id, .. } => {
-                if let Some(bw) = browser::get_widget(*browser_id)
-                    .and_then(|w| w.downcast::<gtk4::Box>().ok())
-                {
-                    if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                        if let Some(old_pw) = widgets.pane_widgets.get(&source_pane_id) {
-                            old_pw.stack.remove(&bw);
-                        }
-                    }
-                    build_browser_pane_widget(&bw, *browser_id)
-                } else {
-                    return;
-                }
-            }
-        };
-
-        // Refresh tab strips
-        let dp = aw.workspace_widgets.get(&ws_id)
-            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()));
-        if let Some((dp_w, dp_r)) = dp.as_ref() {
-            // Source pane: update visible child and tab strip
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) {
-                if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                    if let Some(pw) = widgets.pane_widgets.get(&source_pane_id) {
-                        if let Some(active_tab) = pane.tabs.get(pane.selected_tab) {
-                            pw.stack.set_visible_child_name(&active_tab.panel.stack_child_name());
-                        }
-                        refresh_pane_tab_strip(pw, pane, dp_w, dp_r);
-                    }
-                }
-            }
-            // New pane tab strip
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&new_pane_id) {
-                refresh_pane_tab_strip(&new_pane_widget, pane, dp_w, dp_r);
-            }
+        let source_pane = aw.workspaces[ws_idx]
+            .panes
+            .get(&source_pane_id)
+            .expect("source pane remains until cleanup");
+        if let Some(active_tab) = source_pane.tabs.get(source_pane.selected_tab) {
+            source_stack.set_visible_child_name(&active_tab.panel.stack_child_name());
         }
+        let source_pw = aw
+            .workspace_widgets
+            .get(&ws_id)
+            .expect("source workspace widgets remain")
+            .pane_widgets
+            .get(&source_pane_id)
+            .expect("source pane widget remains");
+        refresh_pane_tab_strip(source_pw, source_pane, &drop_preview, &drop_preview_rect);
 
-        // If source pane is now empty, remove it from the split tree
         let source_empty = aw.workspaces[ws_idx]
-            .panes.get(&source_pane_id)
-            .map(|p| p.tabs.is_empty())
-            .unwrap_or(false);
+            .panes
+            .get(&source_pane_id)
+            .expect("source pane remains until cleanup")
+            .tabs
+            .is_empty();
         if source_empty {
-            aw.workspaces[ws_idx].split_tree.remove(source_pane_id);
-            aw.workspaces[ws_idx].panes.remove(&source_pane_id);
-            if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
-                widgets.pane_widgets.remove(&source_pane_id);
-            }
+            remove_pane_from_split(aw, ws_idx, ws_id, source_pane_id);
         }
 
-        // Split the target pane to place the new pane adjacent
-        let split_node_id = if before {
-            aw.workspaces[ws_idx].split_tree.split_before(
-                target_pane_id, new_pane_id, orientation,
-            )
+        if before {
+            aw.workspaces[ws_idx]
+                .split_tree
+                .split_before(target_pane_id, new_pane_id, orientation)
         } else {
-            aw.workspaces[ws_idx].split_tree.split(
-                target_pane_id, new_pane_id, orientation,
-            )
-        };
-        let _ = split_node_id;
+            aw.workspaces[ws_idx]
+                .split_tree
+                .split(target_pane_id, new_pane_id, orientation)
+        }
+        .expect("validated target pane must be splittable");
+        refresh_pane_tab_strip(
+            &new_pane_widget,
+            aw.workspaces[ws_idx]
+                .panes
+                .get(&new_pane_id)
+                .expect("new pane was inserted"),
+            &drop_preview,
+            &drop_preview_rect,
+        );
 
-        // Insert new pane widget and rebuild the entire split widget tree
         let tree_snapshot = clone_split_tree_structure(
             &aw.workspaces[ws_idx].split_tree,
             &aw.workspaces[ws_idx].panes,
-        );
-        if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
-            widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
-            rebuild_split_widgets_from_snapshot(&tree_snapshot, widgets, ws_id);
-        }
+        )
+        .expect("new split must have a root");
+        let widgets = aw
+            .workspace_widgets
+            .get_mut(&ws_id)
+            .expect("validated workspace widgets");
+        widgets.pane_widgets.insert(new_pane_id, new_pane_widget);
+        // The source leaf may have been removed, so rebuild all split widgets.
+        rebuild_split_widgets_from_snapshot(&Some(tree_snapshot), widgets, ws_id);
         set_pane_active(aw, ws_idx, new_pane_id);
     });
 }
 
 /// Move a tab from one pane into another existing pane (merge).
-pub(crate) fn move_tab_to_pane(source_pane_id: PaneId, tab_idx: usize, target_pane_id: PaneId) {
+pub(crate) fn move_tab_to_pane(
+    source_pane_id: PaneId,
+    source_identity: TabDragIdentity,
+    target_pane_id: PaneId,
+    target_insertion: TabInsertion,
+) {
     with_app_window_mut(|aw| {
 
         let Some(page) = aw.notebook.current_page() else { return };
@@ -2260,85 +2497,436 @@ pub(crate) fn move_tab_to_pane(source_pane_id: PaneId, tab_idx: usize, target_pa
 
         let ws_id = aw.workspaces[ws_idx].id;
 
-        // Remove the tab from the source pane
-        let tab = {
-            let Some(pane) = aw.workspaces[ws_idx].panes.get_mut(&source_pane_id) else { return };
-            if tab_idx >= pane.tabs.len() { return; }
-            let tab = pane.tabs.remove(tab_idx);
-            if pane.selected_tab >= pane.tabs.len() && !pane.tabs.is_empty() {
-                pane.selected_tab = pane.tabs.len() - 1;
+        if source_pane_id == target_pane_id
+            || aw.workspaces[ws_idx]
+                .split_tree
+                .node_id_for_pane(source_pane_id)
+                .is_none()
+            || aw.workspaces[ws_idx]
+                .split_tree
+                .node_id_for_pane(target_pane_id)
+                .is_none()
+        {
+            return;
+        }
+        let Some(source_pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) else {
+            return;
+        };
+        let Some(source_tab_idx) = tab_index_for_identity(source_pane, source_identity) else {
+            return;
+        };
+        let Some(tab) = source_pane.tabs.get(source_tab_idx) else {
+            return;
+        };
+        let widget_name = tab.panel.stack_child_name();
+        let (moving_widget, source_stack, target_stack) = {
+            let Some(source_widgets) = aw.workspace_widgets.get(&ws_id) else {
+                return;
+            };
+            let Some(source_pw) = source_widgets.pane_widgets.get(&source_pane_id) else {
+                return;
+            };
+            let Some(target_pw) = source_widgets.pane_widgets.get(&target_pane_id) else {
+                return;
+            };
+            let Some(moving_widget) = source_pw.stack.child_by_name(&widget_name) else {
+                return;
+            };
+            if target_pw.stack.child_by_name(&widget_name).is_some() {
+                return;
             }
-            tab
+            (
+                moving_widget,
+                source_pw.stack.clone(),
+                target_pw.stack.clone(),
+            )
+        };
+        let Some(target_pane) = aw.workspaces[ws_idx].panes.get(&target_pane_id) else {
+            return;
+        };
+        let Some(target_index) = insertion_index_for_target(target_pane, target_insertion) else {
+            return;
+        };
+        let Some((drop_preview, drop_preview_rect)) = aw
+            .workspace_widgets
+            .get(&ws_id)
+            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()))
+        else {
+            return;
         };
 
-        // Move the widget from source stack to target stack
-        let widget_name = tab.panel.stack_child_name();
+        // All fallible work is complete before either model or widget changes.
+        let tab = remove_tab_preserving_selection(
+            aw.workspaces[ws_idx]
+                .panes
+                .get_mut(&source_pane_id)
+                .expect("validated source pane"),
+            source_tab_idx,
+        );
+        aw.workspaces[ws_idx]
+            .panes
+            .get_mut(&target_pane_id)
+            .expect("validated target pane")
+            .tabs
+            .insert(target_index, tab);
+        aw.workspaces[ws_idx]
+            .panes
+            .get_mut(&target_pane_id)
+            .expect("validated target pane")
+            .selected_tab = target_index;
+        source_stack.remove(&moving_widget);
+        target_stack.add_named(&moving_widget, Some(&widget_name));
+        target_stack.set_visible_child_name(&widget_name);
 
-        if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-            // Remove widget from source stack
-            if let Some(src_pw) = widgets.pane_widgets.get(&source_pane_id) {
-                if let Some(child) = src_pw.stack.child_by_name(&widget_name) {
-                    src_pw.stack.remove(&child);
-                    // Add to target stack
-                    if let Some(tgt_pw) = widgets.pane_widgets.get(&target_pane_id) {
-                        tgt_pw.stack.add_named(&child, Some(&widget_name));
-                        tgt_pw.stack.set_visible_child_name(&widget_name);
-                    }
-                }
-            }
-        }
-
-        // Add tab to target pane data model
-        {
-            let Some(target_pane) = aw.workspaces[ws_idx].panes.get_mut(&target_pane_id) else { return };
-            target_pane.tabs.push(tab);
-            target_pane.selected_tab = target_pane.tabs.len() - 1;
-        }
-
-        // If source pane is now empty, remove it
         let source_empty = aw.workspaces[ws_idx]
             .panes
             .get(&source_pane_id)
-            .map(|p| p.tabs.is_empty())
-            .unwrap_or(false);
-
-        let dp = aw.workspace_widgets.get(&ws_id)
-            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()));
+            .expect("source pane remains until cleanup")
+            .tabs
+            .is_empty();
 
         if source_empty {
             // Remove from split tree and rebuild
-            aw.workspaces[ws_idx].split_tree.remove(source_pane_id);
-            aw.workspaces[ws_idx].panes.remove(&source_pane_id);
-            if let Some(widgets) = aw.workspace_widgets.get_mut(&ws_id) {
-                widgets.pane_widgets.remove(&source_pane_id);
-            }
+            remove_pane_from_split(aw, ws_idx, ws_id, source_pane_id);
             rebuild_workspace_split_widgets(aw, ws_idx);
-        } else if let Some((dp_w, dp_r)) = dp.as_ref() {
+        } else {
             // Refresh source pane tab strip
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&source_pane_id) {
-                if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                    if let Some(pw) = widgets.pane_widgets.get(&source_pane_id) {
-                        if let Some(active) = pane.tabs.get(pane.selected_tab) {
-                            pw.stack.set_visible_child_name(&active.panel.stack_child_name());
-                        }
-                        refresh_pane_tab_strip(pw, pane, dp_w, dp_r);
-                    }
-                }
+            let pane = aw.workspaces[ws_idx]
+                .panes
+                .get(&source_pane_id)
+                .expect("source pane remains");
+            if let Some(active) = pane.tabs.get(pane.selected_tab) {
+                source_stack.set_visible_child_name(&active.panel.stack_child_name());
             }
+            let source_pw = aw
+                .workspace_widgets
+                .get(&ws_id)
+                .expect("source workspace widgets remain")
+                .pane_widgets
+                .get(&source_pane_id)
+                .expect("source pane widget remains");
+            refresh_pane_tab_strip(source_pw, pane, &drop_preview, &drop_preview_rect);
         }
 
         // Refresh target pane tab strip
-        if let Some((dp_w, dp_r)) = dp.as_ref() {
-            if let Some(pane) = aw.workspaces[ws_idx].panes.get(&target_pane_id) {
-                if let Some(widgets) = aw.workspace_widgets.get(&ws_id) {
-                    if let Some(pw) = widgets.pane_widgets.get(&target_pane_id) {
-                        refresh_pane_tab_strip(pw, pane, dp_w, dp_r);
-                    }
-                }
-            }
-        }
+        refresh_pane_strip(aw, ws_id, ws_idx, target_pane_id);
 
         set_pane_active(aw, ws_idx, target_pane_id);
+    });
+}
+
+/// Reorder a tab within its existing pane.
+///
+/// `target_insertion` is captured from the visible strip before the deferred
+/// callback runs. Keeping this separate from `move_tab_to_pane` means a tab
+/// dropped in its own strip never enters the pane-extraction path.
+pub(crate) fn reorder_tab_in_pane(
+    pane_id: PaneId,
+    source_identity: TabDragIdentity,
+    target_insertion: TabInsertion,
+) {
+    with_app_window_mut(|aw| {
+        let Some(page) = aw.notebook.current_page() else {
+            return;
+        };
+        let ws_idx = page as usize;
+        if ws_idx >= aw.workspaces.len() {
+            return;
+        }
+        let ws_id = aw.workspaces[ws_idx].id;
+
+        let Some(pane) = aw.workspaces[ws_idx].panes.get(&pane_id) else {
+            return;
+        };
+        if aw.workspaces[ws_idx]
+            .split_tree
+            .node_id_for_pane(pane_id)
+            .is_none()
+        {
+            return;
+        }
+        let Some(from_index) = tab_index_for_identity(pane, source_identity) else {
+            return;
+        };
+        let Some(insertion_index) = insertion_index_for_target(pane, target_insertion) else {
+            return;
+        };
+        let Some(widgets) = aw.workspace_widgets.get(&ws_id) else {
+            return;
+        };
+        let Some(pane_widget) = widgets.pane_widgets.get(&pane_id) else {
+            return;
+        };
+        let Some(widget_name) = pane
+            .tabs
+            .get(from_index)
+            .map(|tab| tab.panel.stack_child_name())
+        else {
+            return;
+        };
+        if pane_widget.stack.child_by_name(&widget_name).is_none() {
+            return;
+        }
+
+        let changed = {
+            let pane = aw.workspaces[ws_idx]
+                .panes
+                .get_mut(&pane_id)
+                .expect("validated pane");
+            let insertion_index = insertion_index.min(pane.tabs.len());
+            let destination = if insertion_index > from_index {
+                insertion_index - 1
+            } else {
+                insertion_index
+            };
+            if destination == from_index {
+                false
+            } else {
+                let tab = pane.tabs.remove(from_index);
+                pane.tabs.insert(destination, tab);
+
+                // Keep the same tab selected while indices move around it.
+                let selected = pane.selected_tab;
+                pane.selected_tab = if selected == from_index {
+                    destination
+                } else {
+                    let mut selected = selected;
+                    if selected > from_index {
+                        selected -= 1;
+                    }
+                    if selected >= destination {
+                        selected += 1;
+                    }
+                    selected
+                };
+                true
+            }
+        };
+
+        if changed {
+            refresh_pane_strip(aw, ws_id, ws_idx, pane_id);
+        }
+    });
+}
+
+/// Move a tab from any workspace into the destination workspace's focused
+/// pane.  The split-tree order is the deterministic fallback when the
+/// destination has no valid focused pane.
+pub(crate) fn move_tab_to_workspace(
+    source_pane_id: PaneId,
+    source_identity: TabDragIdentity,
+    target_workspace_id: WorkspaceId,
+) {
+    with_app_window_mut(|aw| {
+        let Some(source_ws_idx) = aw
+            .workspaces
+            .iter()
+            .position(|ws| ws.panes.contains_key(&source_pane_id))
+        else {
+            return;
+        };
+        let Some(target_ws_idx) = aw
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == target_workspace_id)
+        else {
+            return;
+        };
+
+        // A drop on the source workspace is not a cross-workspace move.
+        if source_ws_idx == target_ws_idx {
+            return;
+        }
+
+        let source_ws_id = aw.workspaces[source_ws_idx].id;
+        let target_pane_id = {
+            let target_ws = &aw.workspaces[target_ws_idx];
+            target_ws
+                .focused_pane()
+                .filter(|pane_id| target_ws.panes.contains_key(pane_id))
+                .or_else(|| {
+                    target_ws
+                        .split_tree
+                        .panes()
+                        .into_iter()
+                        .find(|pane_id| target_ws.panes.contains_key(pane_id))
+                })
+        };
+        let Some(target_pane_id) = target_pane_id else {
+            return;
+        };
+        if aw.workspaces[target_ws_idx]
+            .split_tree
+            .node_id_for_pane(target_pane_id)
+            .is_none()
+        {
+            return;
+        }
+        if aw.workspaces[source_ws_idx]
+            .split_tree
+            .node_id_for_pane(source_pane_id)
+            .is_none()
+        {
+            return;
+        }
+
+        let Some(source_pane) = aw.workspaces[source_ws_idx].panes.get(&source_pane_id) else {
+            return;
+        };
+        let Some(source_tab_idx) = tab_index_for_identity(source_pane, source_identity) else {
+            return;
+        };
+        let Some(tab) = source_pane.tabs.get(source_tab_idx) else {
+            return;
+        };
+        let widget_name = tab.panel.stack_child_name();
+        let (moving_widget, source_stack, target_stack, source_container) = {
+            let Some(source_widgets) = aw.workspace_widgets.get(&source_ws_id) else {
+                return;
+            };
+            let Some(source_pw) = source_widgets.pane_widgets.get(&source_pane_id) else {
+                return;
+            };
+            let Some(target_widgets) = aw.workspace_widgets.get(&target_workspace_id) else {
+                return;
+            };
+            let Some(target_pw) = target_widgets.pane_widgets.get(&target_pane_id) else {
+                return;
+            };
+            let Some(moving_widget) = source_pw.stack.child_by_name(&widget_name) else {
+                return;
+            };
+            if target_pw.stack.child_by_name(&widget_name).is_some() {
+                return;
+            }
+            (
+                moving_widget,
+                source_pw.stack.clone(),
+                target_pw.stack.clone(),
+                source_pw.container.clone(),
+            )
+        };
+        if source_container
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk4::Paned>().ok())
+            .is_none()
+        {
+            return;
+        }
+        let Some((drop_preview, drop_preview_rect)) = aw
+            .workspace_widgets
+            .get(&source_ws_id)
+            .map(|w| (w.drop_preview.clone(), w.drop_preview_rect.clone()))
+        else {
+            return;
+        };
+
+        // All fallible work is complete before either model or widget changes.
+        let tab = remove_tab_preserving_selection(
+            aw.workspaces[source_ws_idx]
+                .panes
+                .get_mut(&source_pane_id)
+                .expect("validated source pane"),
+            source_tab_idx,
+        );
+        aw.workspaces[target_ws_idx]
+            .panes
+            .get_mut(&target_pane_id)
+            .expect("validated target pane")
+            .tabs
+            .push(tab);
+        let target_tab_idx = aw.workspaces[target_ws_idx]
+            .panes
+            .get(&target_pane_id)
+            .expect("validated target pane")
+            .tabs
+            .len()
+            - 1;
+        aw.workspaces[target_ws_idx]
+            .panes
+            .get_mut(&target_pane_id)
+            .expect("validated target pane")
+            .selected_tab = target_tab_idx;
+        source_stack.remove(&moving_widget);
+        target_stack.add_named(&moving_widget, Some(&widget_name));
+        target_stack.set_visible_child_name(&widget_name);
+
+        let source_empty = aw.workspaces[source_ws_idx]
+            .panes
+            .get(&source_pane_id)
+            .expect("source pane remains until cleanup")
+            .tabs
+            .is_empty();
+
+        if source_empty {
+            // Remove the empty leaf from both the model and GTK tree, then
+            // rebuild the remaining source layout so nested splits collapse
+            // consistently.  A workspace with no panes is removed entirely,
+            // matching the existing last-panel close behavior.
+            remove_pane_from_split(&mut *aw, source_ws_idx, source_ws_id, source_pane_id);
+            rebuild_workspace_split_widgets(&mut *aw, source_ws_idx);
+
+            if aw.workspaces[source_ws_idx].panes.is_empty() {
+                remove_workspace_at(&mut *aw, source_ws_idx);
+            } else if let Some(source_focus) = aw.workspaces[source_ws_idx].focused_pane() {
+                set_pane_active(&mut *aw, source_ws_idx, source_focus);
+            }
+        } else {
+            // Keep the source pane's selected tab and visible widget in sync
+            // after removing the dragged tab.
+            let source_pane = aw.workspaces[source_ws_idx]
+                .panes
+                .get(&source_pane_id)
+                .expect("source pane remains");
+            let source_active = source_pane
+                .active_panel()
+                .expect("source pane has an active tab");
+            source_stack.set_visible_child_name(&source_active.stack_child_name());
+            let source_pw = aw
+                .workspace_widgets
+                .get(&source_ws_id)
+                .expect("source workspace widgets remain")
+                .pane_widgets
+                .get(&source_pane_id)
+                .expect("source pane widget remains");
+            refresh_pane_tab_strip(source_pw, source_pane, &drop_preview, &drop_preview_rect);
+        }
+
+        // Refresh the destination strip after the model move.  Re-find its
+        // index because removing the source workspace can shift page indexes.
+        let target_ws_idx = aw
+            .workspaces
+            .iter()
+            .position(|ws| ws.id == target_workspace_id)
+            .expect("destination workspace survives tab move");
+        let target_widgets = aw
+            .workspace_widgets
+            .get(&target_workspace_id)
+            .expect("destination workspace widgets survive tab move");
+        let target_pw = target_widgets
+            .pane_widgets
+            .get(&target_pane_id)
+            .expect("destination pane widget survives tab move");
+        let target_pane = aw.workspaces[target_ws_idx]
+            .panes
+            .get(&target_pane_id)
+            .expect("destination pane survives tab move");
+        refresh_pane_tab_strip(
+            target_pw,
+            target_pane,
+            &target_widgets.drop_preview,
+            &target_widgets.drop_preview_rect,
+        );
+
+        // The dropped tab becomes the active tab in the destination workspace.
+        aw.notebook.set_current_page(Some(target_ws_idx as u32));
+        let target_widgets = aw
+            .workspace_widgets
+            .get(&target_workspace_id)
+            .expect("destination workspace widgets survive tab move");
+        aw.sidebar_list
+            .select_row(Some(&target_widgets.sidebar_row));
+        set_pane_active(&mut *aw, target_ws_idx, target_pane_id);
     });
 }
 

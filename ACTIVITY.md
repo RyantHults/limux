@@ -296,3 +296,14 @@ integration?") when the installed version differs, no-op when they match.
 
 **Verification:** `cargo build` clean (0 errors) inside the nix dev shell;
 `target/debug/limux` links.
+
+## 2026-08-26 — Tab drag-and-drop fixes
+
+**Fix:** Tab payloads now use stable panel IDs. Tab strips support insertion
+markers and reordering while content drops retain the pane split preview.
+Transfers preflight model/GTK state, preserve active tabs, clean empty source
+panes, support sidebar cross-workspace drops, and keep GTK child order aligned
+with before/after split direction. Bare workspace payloads still reorder rows.
+
+**Verification:** Formatting and `git diff --check` passed; `cargo build` was
+not run per task instructions.
