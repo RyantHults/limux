@@ -86,6 +86,8 @@ pub(crate) fn refresh_pane_tab_strip(
     drop_preview: &gtk4::DrawingArea,
     drop_preview_rect: &Rc<RefCell<Option<PreviewRect>>>,
 ) {
+    clear_tab_drop_indicator(&pane_widget.tab_strip);
+
     // Clear existing strip buttons
     while let Some(child) = pane_widget.tab_strip.first_child() {
         pane_widget.tab_strip.remove(&child);
@@ -164,7 +166,7 @@ pub(crate) fn refresh_pane_tab_strip(
         attach_tab_context_menu(&btn, pane_id, idx);
 
         // Drag source on the tab box
-        attach_pane_tab_drag_source(&btn, pane_id, idx);
+        attach_pane_tab_drag_source(&btn, pane_id, &tab.panel);
 
         pane_widget.tab_strip.append(&tab_box);
     }
@@ -173,8 +175,13 @@ pub(crate) fn refresh_pane_tab_strip(
     remove_drop_targets(pane_widget.tab_strip.upcast_ref::<gtk4::Widget>());
     remove_drop_targets(pane_widget.stack.upcast_ref::<gtk4::Widget>());
 
-    // Drop target on the tab strip — merges dragged tab into this pane
-    attach_tab_strip_drop_target(&pane_widget.tab_strip, pane_id, drop_preview, drop_preview_rect);
+    // Drop target on the tab strip — reorders here, or merges from another pane.
+    attach_tab_strip_drop_target(
+        &pane_widget.tab_strip,
+        pane_id,
+        drop_preview,
+        drop_preview_rect,
+    );
 
     // Drop target on the terminal area (stack) — splits the pane.
     // Browser panes need capture phase because WebKitWebView consumes the
@@ -274,12 +281,13 @@ fn start_tab_rename(btn: &gtk4::ToggleButton, pane_id: PaneId, tab_idx: usize) {
 }
 
 /// Attach a drag source to a pane tab button for pane reordering.
-fn attach_pane_tab_drag_source(btn: &gtk4::ToggleButton, pane_id: PaneId, tab_idx: usize) {
+fn attach_pane_tab_drag_source(btn: &gtk4::ToggleButton, pane_id: PaneId, panel: &PanelKind) {
     let drag_source = gtk4::DragSource::new();
     drag_source.set_actions(gdk4::DragAction::MOVE);
 
+    let payload = crate::window::tab_drag_payload(pane_id, panel);
     drag_source.connect_prepare(move |_source, _x, _y| {
-        let value = glib::Value::from(format!("pane:{}:{}", pane_id, tab_idx));
+        let value = glib::Value::from(payload.clone());
         Some(gdk4::ContentProvider::for_value(&value))
     });
 
@@ -302,7 +310,62 @@ pub(crate) fn remove_drop_targets(widget: &gtk4::Widget) {
     }
 }
 
-/// Attach a drop target to the tab strip — dropping here merges the tab into this pane.
+fn clear_tab_drop_indicator(tab_strip: &gtk4::Box) {
+    tab_strip.remove_css_class("tab-drop-active");
+    tab_strip.remove_css_class("tab-drop-end");
+    let mut child = tab_strip.first_child();
+    while let Some(widget) = child {
+        widget.remove_css_class("tab-drop-before");
+        widget.remove_css_class("tab-drop-after");
+        child = widget.next_sibling();
+    }
+}
+
+/// Return the insertion slot under a pointer in the horizontal tab strip.
+fn tab_insertion_index(tab_strip: &gtk4::Box, x: f64) -> usize {
+    let mut index = 0;
+    let mut child = tab_strip.first_child();
+    while let Some(widget) = child {
+        let allocation = widget.allocation();
+        if x < allocation.x() as f64 + allocation.width() as f64 / 2.0 {
+            break;
+        }
+        index += 1;
+        child = widget.next_sibling();
+    }
+    index
+}
+
+fn show_tab_drop_indicator(tab_strip: &gtk4::Box, insertion_index: usize) {
+    clear_tab_drop_indicator(tab_strip);
+    tab_strip.add_css_class("tab-drop-active");
+
+    let mut count = 0;
+    let mut child = tab_strip.first_child();
+    while let Some(widget) = child {
+        count += 1;
+        child = widget.next_sibling();
+    }
+
+    if insertion_index >= count {
+        tab_strip.add_css_class("tab-drop-end");
+        if let Some(last) = tab_strip.last_child() {
+            last.add_css_class("tab-drop-after");
+        }
+    } else {
+        let mut child = tab_strip.first_child();
+        for _ in 0..insertion_index {
+            child = child.and_then(|widget| widget.next_sibling());
+        }
+        if let Some(child) = child {
+            child.add_css_class("tab-drop-before");
+        }
+    }
+}
+
+/// Attach a drop target to the tab strip. The strip is a tab reorder target,
+/// not a pane split target, so it deliberately never paints the full-pane
+/// content preview.
 fn attach_tab_strip_drop_target(
     tab_strip: &gtk4::Box,
     target_pane_id: PaneId,
@@ -320,29 +383,19 @@ fn attach_tab_strip_drop_target(
         true
     });
 
-    let inset = 6.0_f64;
-
-    // --- motion: show full-pane overlay ---
+    // --- motion: show a tab insertion indicator ---
     let strip_weak = tab_strip.downgrade();
     let preview_weak = drop_preview.downgrade();
     let rect_motion = preview_rect.clone();
-    drop_target.connect_motion(move |_target, _x, _y| {
-        if let (Some(strip), Some(preview)) = (strip_weak.upgrade(), preview_weak.upgrade()) {
-            // The pane container is the tab strip's parent
-            if let Some(container) = strip.parent() {
-                let overlay = preview.parent().unwrap();
-                let w = container.width() as f64;
-                let h = container.height() as f64;
-                if let Some(origin) = container.compute_point(&overlay, &gtk4::graphene::Point::new(0.0, 0.0)) {
-                    let ox = origin.x() as f64;
-                    let oy = origin.y() as f64;
-                    *rect_motion.borrow_mut() = Some(PreviewRect {
-                        x: ox + inset, y: oy + inset,
-                        width: w - inset * 2.0, height: h - inset * 2.0,
-                    });
-                    preview.queue_draw();
-                }
-            }
+    drop_target.connect_motion(move |_target, x, _y| {
+        if let Some(strip) = strip_weak.upgrade() {
+            show_tab_drop_indicator(&strip, tab_insertion_index(&strip, x));
+        }
+        // A drag can enter the strip directly from the content area. Clear any
+        // old split preview so the header never appears to be a split target.
+        *rect_motion.borrow_mut() = None;
+        if let Some(preview) = preview_weak.upgrade() {
+            preview.queue_draw();
         }
         gdk4::DragAction::MOVE
     });
@@ -350,8 +403,12 @@ fn attach_tab_strip_drop_target(
     // --- leave: clear preview ---
     let preview_weak = drop_preview.downgrade();
     let rect_leave = preview_rect.clone();
+    let strip_weak = tab_strip.downgrade();
     drop_target.connect_leave(move |_target| {
         *rect_leave.borrow_mut() = None;
+        if let Some(strip) = strip_weak.upgrade() {
+            clear_tab_drop_indicator(&strip);
+        }
         if let Some(preview) = preview_weak.upgrade() {
             preview.queue_draw();
         }
@@ -360,25 +417,51 @@ fn attach_tab_strip_drop_target(
     // --- drop: move tab into this pane ---
     let preview_weak = drop_preview.downgrade();
     let rect_drop = preview_rect.clone();
-    drop_target.connect_drop(move |_target, value, _x, _y| {
+    let strip_weak = tab_strip.downgrade();
+    drop_target.connect_drop(move |_target, value, x, _y| {
         *rect_drop.borrow_mut() = None;
+        let Some(strip) = strip_weak.upgrade() else {
+            return false;
+        };
+        let insertion_index = tab_insertion_index(&strip, x);
+        let Some(target_insertion) =
+            crate::window::tab_insertion_for_pane(target_pane_id, insertion_index)
+        else {
+            return false;
+        };
+        clear_tab_drop_indicator(&strip);
         if let Some(preview) = preview_weak.upgrade() {
             preview.queue_draw();
         }
 
-        let Ok(payload) = value.get::<String>() else { return false };
-        let Some(rest) = payload.strip_prefix("pane:") else { return false };
-        let Some((pid, tidx)) = rest.split_once(':') else { return false };
-        let Ok(source_pane_id) = pid.parse::<PaneId>() else { return false };
-        let Ok(tab_idx) = tidx.parse::<usize>() else { return false };
-
-        if source_pane_id == target_pane_id {
-            return false; // already in this pane
+        let Ok(payload) = value.get::<String>() else {
+            return false;
+        };
+        let Some((source_pane_id, source_identity)) =
+            crate::window::parse_tab_drag_payload(&payload)
+        else {
+            return false;
+        };
+        if crate::window::pane_tab_count_for_identity(source_pane_id, source_identity).is_none() {
+            return false;
         }
 
         // Defer to idle so GTK finishes drag cleanup before we modify widgets
         glib::idle_add_local_once(move || {
-            crate::window::move_tab_to_pane(source_pane_id, tab_idx, target_pane_id);
+            if source_pane_id == target_pane_id {
+                crate::window::reorder_tab_in_pane(
+                    source_pane_id,
+                    source_identity,
+                    target_insertion,
+                );
+            } else {
+                crate::window::move_tab_to_pane(
+                    source_pane_id,
+                    source_identity,
+                    target_pane_id,
+                    target_insertion,
+                );
+            }
         });
         true
     });
@@ -485,14 +568,18 @@ fn attach_pane_drop_target(
         let Ok(payload) = value.get::<String>() else { return false };
         let Some(rest) = payload.strip_prefix("pane:") else { return false };
 
-        // Parse "pane:{pane_id}:{tab_idx}" or legacy "pane:{pane_id}"
-        let (source_pane_id, source_tab_idx) = if let Some((pid, tidx)) = rest.split_once(':') {
-            let Ok(pid) = pid.parse::<PaneId>() else { return false };
-            let Ok(tidx) = tidx.parse::<usize>() else { return false };
-            (pid, Some(tidx))
+        // Current tab drags carry a stable panel identity. Keep accepting the
+        // old pane-only payload for pane moves, but never use it to identify a
+        // tab for an extraction operation.
+        let (source_pane_id, source_identity) = if let Some((source_pane_id, source_identity)) =
+            crate::window::parse_tab_drag_payload(&payload)
+        {
+            (source_pane_id, Some(source_identity))
         } else {
-            let Ok(pid) = rest.parse::<PaneId>() else { return false };
-            (pid, None)
+            let Ok(source_pane_id) = rest.parse::<PaneId>() else {
+                return false;
+            };
+            (source_pane_id, None)
         };
 
         let (w, h) = container_weak.upgrade()
@@ -503,19 +590,40 @@ fn attach_pane_drop_target(
 
         // Defer to idle so GTK finishes drag cleanup before we modify widgets
         glib::idle_add_local_once(move || {
-            if source_pane_id == target_pane_id {
-                // Same pane: extract tab into a new split
-                if let Some(tab_idx) = source_tab_idx {
-                    crate::window::split_tab_to_pane(source_pane_id, tab_idx, orientation, before);
+            if let Some(source_identity) = source_identity {
+                if crate::window::pane_tab_count_for_identity(source_pane_id, source_identity)
+                    .is_none()
+                {
+                    return;
                 }
-            } else if let Some(tab_idx) = source_tab_idx {
-                // Different pane with a specific tab: check if source has multiple tabs
-                let source_tab_count = crate::window::pane_tab_count(source_pane_id);
-                if source_tab_count > 1 {
-                    // Extract just this tab, then move it adjacent to target
-                    crate::window::split_tab_to_pane_target(source_pane_id, tab_idx, target_pane_id, orientation, before);
-                } else {
-                    crate::window::move_pane(source_pane_id, target_pane_id, before, orientation);
+                if source_pane_id == target_pane_id {
+                    // Same pane: extract tab into a new split
+                    crate::window::split_tab_to_pane(
+                        source_pane_id,
+                        source_identity,
+                        orientation,
+                        before,
+                    );
+                } else if let Some(source_tab_count) =
+                    crate::window::pane_tab_count_for_identity(source_pane_id, source_identity)
+                {
+                    if source_tab_count > 1 {
+                        // Extract just this tab, then move it adjacent to target
+                        crate::window::split_tab_to_pane_target(
+                            source_pane_id,
+                            source_identity,
+                            target_pane_id,
+                            orientation,
+                            before,
+                        );
+                    } else {
+                        crate::window::move_pane(
+                            source_pane_id,
+                            target_pane_id,
+                            before,
+                            orientation,
+                        );
+                    }
                 }
             } else {
                 crate::window::move_pane(source_pane_id, target_pane_id, before, orientation);
