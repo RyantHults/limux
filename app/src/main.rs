@@ -59,6 +59,57 @@ pub fn close_window() {
     });
 }
 
+fn ghostty_resources_valid(root: &std::path::Path) -> bool {
+    let Some(share_dir) = root.parent() else {
+        return false;
+    };
+    root.join("shell-integration/bash/ghostty.bash").is_file()
+        && share_dir.join("terminfo").is_dir()
+}
+
+/// Resolve Ghostty's generated resources before GTK/GIO and ghostty_init.
+/// AppImage resources are relocatable; the repo candidate is debug-only so
+/// release binaries never depend on a checked-out source tree.
+fn setup_ghostty_resources() {
+    let explicit = std::env::var_os("GHOSTTY_RESOURCES_DIR");
+    if let Some(path) = explicit.as_ref() {
+        let root = std::path::Path::new(path);
+        if !path.is_empty() && ghostty_resources_valid(root) {
+            return;
+        }
+        eprintln!(
+            "[ghostty] ignoring incomplete GHOSTTY_RESOURCES_DIR: {}",
+            root.display()
+        );
+    }
+
+    let mut candidates = Vec::with_capacity(2);
+    if let Some(appdir) = std::env::var_os("APPDIR") {
+        if !appdir.is_empty() {
+            candidates.push(std::path::PathBuf::from(appdir).join("usr/share/ghostty"));
+        }
+    }
+    #[cfg(debug_assertions)]
+    if let Some(repo_root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+        candidates.push(repo_root.join("ghostty/zig-out/share/ghostty"));
+    }
+
+    let resources_dir = candidates
+        .into_iter()
+        .find(|path| ghostty_resources_valid(path));
+
+    // SAFETY: called at the start of main(), before GTK/GIO or Ghostty can
+    // spawn threads that observe the process environment.
+    unsafe {
+        if let Some(resources_dir) = resources_dir {
+            let resources_dir = resources_dir.canonicalize().unwrap_or(resources_dir);
+            std::env::set_var("GHOSTTY_RESOURCES_DIR", resources_dir);
+        } else {
+            std::env::remove_var("GHOSTTY_RESOURCES_DIR");
+        }
+    }
+}
+
 /// AppImage runtime setup for WebKitGTK helper processes.
 ///
 /// libwebkitgtk-6.0.so is byte-patched at AppImage build time to look
@@ -113,6 +164,7 @@ fn setup_appimage_webkit() {
 }
 
 fn main() {
+    setup_ghostty_resources();
     setup_appimage_webkit();
     eprintln!("[limux-icon] creating app with application_id=com.limux.terminal");
     let app = gtk4::Application::new(

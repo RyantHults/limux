@@ -291,6 +291,116 @@ def test_new_pane_tab_inherits_working_directory():
         shutil.rmtree(sock_dir, ignore_errors=True)
 
 
+def test_new_pane_tab_inherits_osc7_working_directory():
+    """A live OSC 7 report must seed the next pane tab's working directory."""
+    target = "/tmp/limux-cwd-inherit-osc7#byte"
+    osc7_path = target.replace("#", "%23")
+    os.makedirs(target, exist_ok=True)
+    bin_path = os.environ.get("LIMUX_BIN") or str(
+        Path(__file__).resolve().parents[1] / "target/debug/limux"
+    )
+    if not os.path.exists(bin_path):
+        pytest.skip(f"limux binary not found at {bin_path}")
+
+    sock_dir = tempfile.mkdtemp(prefix="limux-cwd-osc7-test-")
+    sock_path = os.path.join(sock_dir, "limux.sock")
+    # Do not cd here: tab one must report a target different from its actual
+    # startup directory. The escaped '#' exercises Ghostty's percent-decoding
+    # path without relying on whitespace in list_surfaces output.
+    command = (
+        "printf '\\033]7;file://localhost%%s\\007' '%s'; "
+        "printf 'PWDINIT:%%s\\n' \"$PWD\"; "
+        "exec bash"
+    ) % osc7_path
+
+    cmd = [bin_path, "--socket", sock_path, "--command", command]
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        if not shutil.which("xvfb-run"):
+            pytest.skip("no DISPLAY and xvfb-run unavailable")
+        cmd = ["xvfb-run", "-a", "--server-args=-screen 0 1280x800x24"] + cmd
+
+    proc = subprocess.Popen(
+        cmd,
+        start_new_session=True,
+    )
+    try:
+        def socket_ready():
+            if os.path.exists(sock_path):
+                return True
+            if proc.poll() is not None:
+                raise AssertionError(
+                    f"limux exited early (rc={proc.returncode})"
+                )
+            return False
+
+        assert _wait_until(socket_ready, timeout_s=30), "socket never appeared"
+
+        with limux(socket_path=sock_path) as cli:
+            cli.new_workspace()
+            ws_id, _ = cli.current_workspace()
+
+            def terminals():
+                return [
+                    s for s in cli.list_surfaces()
+                    if s.get("workspace") == ws_id and s.get("kind") == "terminal"
+                ]
+
+            assert _wait_until(lambda: len(terminals()) >= 1)
+            tab1_id = terminals()[0]["id"]
+
+            def spawned_dir(surface_id):
+                try:
+                    screen = cli.read_screen(surface_id)
+                except limuxError:
+                    return None
+                for line in screen.splitlines():
+                    if line.startswith("PWDINIT:"):
+                        return line[len("PWDINIT:"):]
+                return None
+
+            assert _wait_until(lambda: spawned_dir(tab1_id) is not None), (
+                "no PWDINIT marker on OSC 7 tab1 screen"
+            )
+            assert spawned_dir(tab1_id) != target
+
+            # Synchronize delivery of the PWD action before invoking Ctrl+T's
+            # socket equivalent. This value comes from the tab cache.
+            assert _wait_until(
+                lambda: any(s.get("cwd") == target for s in terminals()),
+                timeout_s=8.0,
+            ), "tab1 never picked up OSC 7 cwd=%s" % target
+
+            cli.new_pane_tab()
+
+            def tab2s():
+                return [t for t in terminals() if t["id"] != tab1_id]
+
+            assert _wait_until(lambda: len(tab2s()) == 1)
+            tab2_id = tab2s()[0]["id"]
+
+            assert _wait_until(lambda: spawned_dir(tab2_id) is not None), (
+                "no PWDINIT marker on OSC 7 tab2 screen"
+            )
+            assert spawned_dir(tab2_id) == target, (
+                f"OSC 7 tab2 was spawned in {spawned_dir(tab2_id)!r}, "
+                f"expected {target!r}"
+            )
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
 def test_new_tab_inherits_working_directory():
     """A new tab (new_workspace) must start in the focused tab's directory.
 

@@ -189,6 +189,9 @@ pub struct ghostty_surface_config_s {
 
 // ── Action types (subset for Phase 1) ───────────────────────────────
 
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("limux's libghostty FFI currently supports only 64-bit targets");
+
 pub type ghostty_action_tag_e = c_int;
 pub const GHOSTTY_ACTION_TAG_NEW_TAB: ghostty_action_tag_e = 2;
 pub const GHOSTTY_ACTION_TAG_CLOSE_ALL_WINDOWS: ghostty_action_tag_e = 5;
@@ -197,6 +200,8 @@ pub const GHOSTTY_ACTION_TAG_GOTO_TAB: ghostty_action_tag_e = 15;
 pub const GHOSTTY_ACTION_TAG_GOTO_SPLIT: ghostty_action_tag_e = 16;
 pub const GHOSTTY_ACTION_TAG_RENDER: ghostty_action_tag_e = 27;
 pub const GHOSTTY_ACTION_TAG_SET_TITLE: ghostty_action_tag_e = 32;
+// Matches GHOSTTY_ACTION_PWD in the local ghostty/include/ghostty.h enum.
+pub const GHOSTTY_ACTION_TAG_PWD: ghostty_action_tag_e = 35;
 pub const GHOSTTY_ACTION_TAG_RING_BELL: ghostty_action_tag_e = 50;
 
 // Split directions
@@ -220,8 +225,26 @@ pub struct ghostty_action_set_title_s {
     pub title: *const c_char,
 }
 
-// The action union is large and complex. We define fields we need and
-// use a byte array to ensure correct total size.
+// Mirrors ghostty_action_pwd_s from the local ghostty fork. Ghostty's PWD
+// action contains the already-decoded path produced by its OSC 7 handler.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_pwd_s {
+    pub pwd: *const c_char,
+}
+
+// This is the largest member in the local ghostty_action_u union and keeps
+// the binding's size/alignment tied to a real ghostty.h member.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ghostty_action_scrollbar_s {
+    pub total: u64,
+    pub offset: u64,
+    pub len: u64,
+}
+
+// The action union is large and complex. Define the fields we use and retain
+// the local fork's exact architecture-dependent size and alignment.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ghostty_action_u {
@@ -229,7 +252,8 @@ pub union ghostty_action_u {
     pub goto_tab: ghostty_action_goto_tab_e,
     pub goto_split: ghostty_action_goto_split_e,
     pub set_title: ghostty_action_set_title_s,
-    _pad: [u8; 64], // oversized to ensure we don't truncate
+    pub pwd: ghostty_action_pwd_s,
+    pub scrollbar: ghostty_action_scrollbar_s,
 }
 
 #[repr(C)]
@@ -240,6 +264,8 @@ pub struct ghostty_action_s {
 }
 
 pub type ghostty_target_tag_e = c_int;
+pub const GHOSTTY_TARGET_APP: ghostty_target_tag_e = 0;
+pub const GHOSTTY_TARGET_SURFACE: ghostty_target_tag_e = 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -253,6 +279,12 @@ pub struct ghostty_target_s {
     pub tag: ghostty_target_tag_e,
     pub target: ghostty_target_u,
 }
+
+const _: () = {
+    assert!(std::mem::size_of::<ghostty_action_u>() == 24);
+    assert!(std::mem::align_of::<ghostty_action_u>() == 8);
+    assert!(std::mem::size_of::<ghostty_action_s>() == 32);
+};
 
 // ── Runtime config (callbacks) ──────────────────────────────────────
 
