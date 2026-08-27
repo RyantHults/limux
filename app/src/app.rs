@@ -166,6 +166,21 @@ unsafe extern "C" fn action_cb(
             }
             true
         }
+        GHOSTTY_ACTION_TAG_PWD => {
+            // The fork's Pwd.cval() carries the raw path after Ghostty has
+            // parsed and decoded the OSC 7 URI. Only surface-targeted PWD
+            // actions can update a terminal tab.
+            if _target.tag == GHOSTTY_TARGET_SURFACE {
+                let pwd_ptr = unsafe { action.action.pwd.pwd };
+                let surface = unsafe { _target.target.surface };
+                if !pwd_ptr.is_null() && !surface.is_null() {
+                    if let Ok(pwd) = unsafe { CStr::from_ptr(pwd_ptr) }.to_str() {
+                        crate::window::set_surface_working_directory(surface, pwd);
+                    }
+                }
+            }
+            true
+        }
         GHOSTTY_ACTION_TAG_NEW_TAB => {
             crate::window::new_workspace();
             true

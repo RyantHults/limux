@@ -138,6 +138,9 @@ pub struct Tab {
     pub panel: PanelKind,
     pub title: String,
     pub working_directory: Option<String>,
+    /// Whether `working_directory` came from a nonempty OSC 7 PWD report.
+    /// When false, title-derived cwd updates remain allowed as a fallback.
+    pub working_directory_from_osc7: bool,
 }
 
 impl Tab {
@@ -186,6 +189,7 @@ impl Pane {
                 panel: PanelKind::Terminal { surface_id },
                 title: String::new(),
                 working_directory: None,
+                working_directory_from_osc7: false,
             }],
             selected_tab: 0,
             has_bell: false,
@@ -199,6 +203,7 @@ impl Pane {
                 panel: PanelKind::Terminal { surface_id },
                 title: String::new(),
                 working_directory: None,
+                working_directory_from_osc7: false,
             }],
             selected_tab: 0,
             has_bell: false,
@@ -216,6 +221,7 @@ impl Pane {
                 },
                 title: String::new(),
                 working_directory: None,
+                working_directory_from_osc7: false,
             }],
             selected_tab: 0,
             has_bell: false,
@@ -233,6 +239,7 @@ impl Pane {
                 },
                 title: String::new(),
                 working_directory: None,
+                working_directory_from_osc7: false,
             }],
             selected_tab: 0,
             has_bell: false,
@@ -271,6 +278,7 @@ impl Pane {
             panel: PanelKind::Terminal { surface_id },
             title: String::new(),
             working_directory: None,
+            working_directory_from_osc7: false,
         });
         self.selected_tab = idx;
         idx
@@ -286,6 +294,7 @@ impl Pane {
             },
             title: String::new(),
             working_directory: None,
+            working_directory_from_osc7: false,
         });
         self.selected_tab = idx;
         idx

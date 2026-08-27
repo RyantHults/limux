@@ -109,6 +109,21 @@ if [[ ! -f ghostty/zig-out/lib/ghostty-internal.so ]]; then
     exit 1
 fi
 
+GHOSTTY_RESOURCES_SOURCE="$REPO_ROOT/ghostty/zig-out/share/ghostty"
+if [[ ! -d "$GHOSTTY_RESOURCES_SOURCE" ]]; then
+    echo "ERROR: Ghostty shell-integration resources missing." >&2
+    echo "  Expected build output: $GHOSTTY_RESOURCES_SOURCE" >&2
+    echo "  Rebuild ghostty before packaging the AppImage." >&2
+    exit 1
+fi
+GHOSTTY_TERMINFO_SOURCE="$REPO_ROOT/ghostty/zig-out/share/terminfo"
+if [[ ! -d "$GHOSTTY_TERMINFO_SOURCE" ]]; then
+    echo "ERROR: Ghostty terminfo resources missing." >&2
+    echo "  Expected build output: $GHOSTTY_TERMINFO_SOURCE" >&2
+    echo "  Rebuild ghostty before packaging the AppImage." >&2
+    exit 1
+fi
+
 if ! command -v patchelf >/dev/null 2>&1; then
     echo "ERROR: patchelf is required." >&2
     echo "  Debian/Ubuntu:  sudo apt install patchelf" >&2
@@ -139,6 +154,8 @@ mkdir -p "$DIST_DIR"
 mkdir -p "$APPDIR/usr/bin"
 mkdir -p "$APPDIR/usr/lib"
 mkdir -p "$APPDIR/usr/share/applications"
+mkdir -p "$APPDIR/usr/share/ghostty"
+mkdir -p "$APPDIR/usr/share/terminfo"
 mkdir -p "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 
 # --- Step 1: stage binaries, libghostty, desktop, icon ---
@@ -153,6 +170,16 @@ cp -P ghostty/zig-out/lib/ghostty-internal.so "$APPDIR/usr/lib/"
 cp -P ghostty/zig-out/lib/ghostty-internal.a  "$APPDIR/usr/lib/"
 ln -sf ghostty-internal.so "$APPDIR/usr/lib/libghostty-internal.so"
 ln -sf ghostty-internal.so "$APPDIR/usr/lib/libghostty.so"
+
+echo ">>> Staging Ghostty resources..."
+if ! cp -a "$GHOSTTY_RESOURCES_SOURCE/." "$APPDIR/usr/share/ghostty/"; then
+    echo "ERROR: failed to copy Ghostty resources from $GHOSTTY_RESOURCES_SOURCE" >&2
+    exit 1
+fi
+if ! cp -a "$GHOSTTY_TERMINFO_SOURCE/." "$APPDIR/usr/share/terminfo/"; then
+    echo "ERROR: failed to copy Ghostty terminfo from $GHOSTTY_TERMINFO_SOURCE" >&2
+    exit 1
+fi
 
 # Desktop entry + icon. appimagetool looks for limux.{png,svg,xpm}
 # in the AppDir root, so we stage limux.svg there and in the hicolor
@@ -472,6 +499,8 @@ set -e
 set -x
 
 APPDIR="$(cd "$(dirname "$0")" && pwd)"
+export APPDIR
+export GHOSTTY_RESOURCES_DIR="$APPDIR/usr/share/ghostty"
 
 LIMUX_APPIMAGE_VERSION=%%VERSION%%
 

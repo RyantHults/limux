@@ -307,3 +307,31 @@ with before/after split direction. Bare workspace payloads still reorder rows.
 
 **Verification:** Formatting and `git diff --check` passed; `cargo build` was
 not run per task instructions.
+
+## 2026-08-27 — Ctrl+T OSC 7 cwd inheritance
+
+**Fix:** Matched the fork's exact 64-bit PWD action ABI and cached its decoded
+path on the originating terminal tab. Nonempty OSC 7 reports take authority;
+empty reports restore parseable cwd from the retained title so title fallback
+can resume. Split/extract reconstruction preserves the cwd provenance, and the
+focused `new_pane_tab` path inherits the live cached cwd.
+
+**Verification:** Percent-encoded OSC 7 socket regression added without
+changing tab one’s actual cwd;
+`nix develop -c cargo fmt` and `git diff --check` passed. Python syntax
+validation passed; pytest was unavailable in the dev shell. `cargo build` was
+not run per task instructions.
+
+## 2026-08-27 — Complete Ghostty resource contract
+
+**Fix:** The embedded Ghostty lib build now installs generated
+`zig-out/share/ghostty` and sibling `zig-out/share/terminfo` resources. Runtime
+discovery validates `shell-integration/bash/ghostty.bash` plus sibling
+`terminfo`, then uses explicit env, AppImage resources, or debug-only generated
+repo resources; AppImages package both trees and set `GHOSTTY_RESOURCES_DIR`.
+
+**Verification:** Rebuild with
+`cd ghostty && zig build -Dapp-runtime=none -Demit-lib-vt=false -Doptimize=ReleaseFast`.
+Then confirm both `ghostty/zig-out/share/ghostty` and
+`ghostty/zig-out/share/terminfo` exist. `cargo fmt`, `bash -n`, and
+`git diff --check` passed; `cargo build` was not run.

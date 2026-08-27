@@ -2202,6 +2202,7 @@ pub(crate) fn split_tab_to_pane(
         if let Some(new_tab) = new_pane.tabs.first_mut() {
             new_tab.title = tab.title.clone();
             new_tab.working_directory = tab.working_directory.clone();
+            new_tab.working_directory_from_osc7 = tab.working_directory_from_osc7;
         }
 
         // All fallible work is complete before either model or widget changes.
@@ -2407,6 +2408,7 @@ pub(crate) fn split_tab_to_pane_target(
         if let Some(new_tab) = new_pane.tabs.first_mut() {
             new_tab.title = tab.title.clone();
             new_tab.working_directory = tab.working_directory.clone();
+            new_tab.working_directory_from_osc7 = tab.working_directory_from_osc7;
         }
 
         remove_tab_preserving_selection(
@@ -3305,10 +3307,15 @@ pub fn set_surface_title(surface_handle: crate::ghostty_sys::ghostty_surface_t, 
                         matched_surface_id = tab.surface_id();
                         tab.title = title.to_string();
                         if let Some(d) = extract_directory(title) {
-                            let old_dir = tab.working_directory.clone();
-                            tab.working_directory = Some(d.clone());
-                            if old_dir.as_deref() != Some(d.as_str()) {
-                                dir_changed = Some(d);
+                            // OSC 7 PWD actions are authoritative. Keep
+                            // accepting title-derived cwd changes until a
+                            // nonempty PWD report takes authority.
+                            if !tab.working_directory_from_osc7 {
+                                let old_dir = tab.working_directory.clone();
+                                tab.working_directory = Some(d.clone());
+                                if old_dir.as_deref() != Some(d.as_str()) {
+                                    dir_changed = Some(d);
+                                }
                             }
                         }
                         matched = true;
@@ -3342,6 +3349,37 @@ pub fn set_surface_title(surface_handle: crate::ghostty_sys::ghostty_surface_t, 
                 surface_id: sid,
                 title: title.to_string(),
             });
+        }
+    });
+}
+
+/// Update the cached working directory for the terminal identified by its
+/// live Ghostty surface handle. PWD actions carry a decoded, absolute path;
+/// an empty report clears authority so title parsing can resume as fallback.
+pub fn set_surface_working_directory(
+    surface_handle: crate::ghostty_sys::ghostty_surface_t,
+    working_directory: &str,
+) {
+    if surface_handle.is_null() {
+        return;
+    }
+
+    with_app_window_mut(|aw| {
+        for ws in &mut aw.workspaces {
+            for pane in ws.panes.values_mut() {
+                for tab in &mut pane.tabs {
+                    if tab.surface_id().and_then(surfaces::get_handle) == Some(surface_handle) {
+                        if working_directory.is_empty() {
+                            tab.working_directory = extract_directory(&tab.title);
+                            tab.working_directory_from_osc7 = false;
+                        } else {
+                            tab.working_directory = Some(working_directory.to_string());
+                            tab.working_directory_from_osc7 = true;
+                        }
+                        return;
+                    }
+                }
+            }
         }
     });
 }
